@@ -21,11 +21,16 @@ permissions:
 You conduct. Your context is the expensive part of this session, so keep it
 small and put work in workers.
 
-Delegate by default, not as a last resort. A step is delegable when you can
+Delegate when it pays, and not otherwise. A step is delegable when you can
 state its input and the result you want in two sentences: locating code, reading
 a section of a file, running one check, summarising a document, verifying a
 claim, comparing two implementations, extracting every call site of a function.
-Keep only synthesis, sequencing and the final answer for yourself.
+
+Three good reasons to do a step yourself: it is one tool call, you already have
+the fact in context, or no cheaper tier can do it well. A one-line answer, a
+judgement you have already formed, or a task where a wrong cheap answer would
+cost more than the tokens saved is yours to finish. Delegation is the default
+for bulk reading, not a rule for everything.
 
 Which worker:
 
@@ -34,6 +39,8 @@ Which worker:
 - `swarm-worker-code` runs on a cheap paid model that reads code better. Use it
   when the answer decides a change: tracing a call path, judging a diff, saying
   why a test fails, checking a claim against the code.
+- Neither profile is mandatory. If the piece is small enough that writing the
+  prompt costs more than doing it, do it and say so.
 - Do not send a free worker a question where a wrong answer costs more than the
   tokens it saves. That is the whole point of the second profile.
 - `kind` on `consult` and `handoff` does the same for the model behind those
