@@ -206,6 +206,32 @@ test("free slots cap how many free candidates are tried before paid ones", () =>
   )
 })
 
+test("free slots go round the providers before one crowds the others out", () => {
+  const mixed: Candidate[] = [
+    candidate("a-free", 0, 400, "opencode-go"),
+    candidate("b-free", 0, 390, "opencode-go"),
+    candidate("c-free", 0, 380, "opencode-go"),
+    candidate("d-free", 0, 370, "console-openrouter"),
+    candidate("e-free", 0, 360, "console-openrouter"),
+    candidate("paid", 0.2, 350, "opencode-go"),
+    candidate("deepseek-v4.1-flash", 0.75, 340, "opencode-go"),
+  ]
+  const spec: TierSpec = {
+    pick: {
+      ratio: [0, 1.5],
+      prefer: "cost",
+      limit: 3,
+      freeSlots: 3,
+      providerOrder: ["opencode-go", "console-openrouter"],
+    },
+  }
+  const picked = pickCandidates(spec, mixed, "opencode-go/deepseek-v4.1-flash", rank)
+  assert.deepEqual(
+    picked.map((entry) => entry.ref.id),
+    ["a-free", "d-free", "b-free"],
+  )
+})
+
 test("newestOfFamily returns undefined when the family is absent", () => {
   assert.equal(newestOfFamily("nope", pool), undefined)
 })

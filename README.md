@@ -209,6 +209,37 @@ consult can carry that one line and nothing else.
 Resolution is logged by the server as `tier-router: <tier>/<kind> for base ...
 -> ...` so a surprising pick is visible.
 
+### Free fallback across providers
+
+Every free model the catalog offers is a candidate, whatever its provider. On
+2026-11-16 this machine's catalog had 35 of them across `opencode-go`, `opencode`
+and `console-openrouter`, counted with:
+
+```sh
+opencode api get /api/model | python3 -c "
+import json,sys
+d=json.load(sys.stdin)['data']
+print(sum(1 for m in d if m.get('cost') and m['cost'][0]['input']==0 and m['cost'][0]['output']==0))"
+```
+
+`freeSlots` caps how many free candidates are tried before a paid one, and the
+free slots go round `providerOrder`, so one provider's free models cannot crowd
+out another's. Then a cheap paid model is tried, and any free model left over
+stays at the end as a last resort. A run from this machine:
+
+```
+tier-router: worker/lookup for base opencode-go/deepseek-v4.1-flash ->
+  opencode-go/hy4-flash-free 0.00x rank 55 free |
+  opencode/deepseek-v4.1-flash-free 0.00x rank 72 free |
+  console-openrouter/inclusionai/ling-3.2-flash:free 0.00x rank 50 free |
+  opencode-go/muse-spark-1.3-contributor 0.40x rank 40
+```
+
+A new provider needs no code: it becomes eligible when its models appear in the
+catalog, and it gets a turn in the free rotation by being added to
+`providerOrder`. `allow` and `deny` patterns can scope a tier to particular
+providers or model families.
+
 ### Ranking data
 
 `rankings.json` holds a coarse 0-100 prior per family. It is a prior, not a

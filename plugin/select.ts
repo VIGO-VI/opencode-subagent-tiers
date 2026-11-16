@@ -176,14 +176,36 @@ export function pickCandidates(
     return quality(b) - quality(a) || b.model.released - a.model.released || a.model.price - b.model.price
   })
 
-  // Free tiers get rate limited, so spend a few slots on them, then cheap paid
-  // ones, and keep any further free models as a last resort.
+  // Free tiers get rate limited, so spend a few slots on them, then a cheap paid
+  // one, and keep further free models as a last resort. Free slots go round the
+  // providers in order, so one provider's free models cannot crowd out another's.
   const freeSlots = pick.freeSlots ?? 3
   let ordered = sorted
   if (pick.prefer === "cost") {
     const free = sorted.filter((entry) => entry.model.price === 0)
     const paid = sorted.filter((entry) => entry.model.price > 0)
-    ordered = [...free.slice(0, freeSlots), ...paid, ...free.slice(freeSlots)]
+    const taken: typeof free = []
+    const byProvider = new Map<number, typeof free>()
+    for (const entry of free) {
+      const index = providerIndex(entry)
+      const bucket = byProvider.get(index) ?? []
+      bucket.push(entry)
+      byProvider.set(index, bucket)
+    }
+    for (let round = 0; taken.length < freeSlots; round++) {
+      let added = false
+      for (const index of [...byProvider.keys()].sort((a, b) => a - b)) {
+        const bucket = byProvider.get(index) ?? []
+        const next = bucket[round]
+        if (!next) continue
+        taken.push(next)
+        added = true
+        if (taken.length >= freeSlots) break
+      }
+      if (!added) break
+    }
+    const leftover = free.filter((entry) => !taken.includes(entry))
+    ordered = [...taken, ...paid, ...leftover]
   }
 
   return ordered.slice(0, pick.limit ?? 3).map((entry) => ({
