@@ -272,7 +272,18 @@ It reads OpenRouter's unified benchmarks, which aggregate Artificial Analysis,
 Design Arena and OpenRouter's own GPQA, tau-bench and web-search evaluations, and
 writes wildcarded family scores. Rate limit is 30 requests a minute, 500 a day.
 
-The key is read from the environment and never written anywhere. An OpenRouter
+Pass the key in the environment or in a file you own, never on the command
+line and never in a chat or a commit:
+
+```sh
+mkdir -p ~/.config/openrouter && chmod 700 ~/.config/openrouter
+printf '%s' 'sk-or-...' > ~/.config/openrouter/key && chmod 600 ~/.config/openrouter/key
+node scripts/rank.mjs --key-file ~/.config/openrouter/key --dry
+```
+
+The benchmark endpoint needs a valid key but charges nothing for the calls
+themselves; its limits are requests per minute and per day. The key is read from
+the environment or that file and never written anywhere. An OpenRouter
 integration inside OpenCode Console gives you the models through
 `opencode.ai/inference/...`, not a key that `openrouter.ai/api/v1/benchmarks`
 accepts, so refreshing the table needs an OpenRouter key of its own.

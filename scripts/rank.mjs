@@ -4,7 +4,11 @@
 // tau-bench and web-search evals.
 //
 // Usage:
-//   OPENROUTER_API_KEY=sk-or-... node scripts/rank.mjs [--task-type code] [--dry]
+//   node scripts/rank.mjs [--key-file ~/.config/openrouter/key] [--task-type code] [--dry]
+//
+// The key comes from OPENROUTER_API_KEY or from a file, never from the command
+// line, so it stays out of shell history and out of anything shared. The file
+// should be readable by you alone (chmod 600).
 //
 // Without a key this exits non-zero and leaves the vendored prior in place.
 // The rate limits are from the endpoint's documentation, not measured here:
@@ -17,9 +21,13 @@ import { dirname, join } from "node:path"
 const here = dirname(fileURLToPath(import.meta.url))
 const target = join(here, "..", "rankings.json")
 
-const key = process.env.OPENROUTER_API_KEY
+const keyIndex = process.argv.indexOf("--key-file")
+const keyFile = keyIndex === -1 ? undefined : process.argv[keyIndex + 1]
+const key =
+  process.env.OPENROUTER_API_KEY ??
+  (keyFile ? readFileSync(keyFile.replace(/^~/, process.env.HOME ?? ""), "utf8").trim() : undefined)
 if (!key) {
-  console.error("rank: set OPENROUTER_API_KEY to refresh from OpenRouter benchmarks")
+  console.error("rank: set OPENROUTER_API_KEY or pass --key-file <path>")
   process.exit(2)
 }
 
