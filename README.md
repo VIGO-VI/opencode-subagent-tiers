@@ -88,6 +88,13 @@ Two subagent levels is the working maximum, and one is the common case. Past
 that the tiers are running on models too weak to judge the work below them, so
 a deeper chain adds cost without adding an answer.
 
+A second config directory gets the same treatment, which is how the container
+install is made rather than hand-edited:
+
+```sh
+OPENCODE_CONFIG_DIR=~/.local/share/vigo-agent/.config/opencode ./install.sh
+```
+
 What makes an agent actually delegate, in order of strength:
 
 1. `default_agent: "swarm-lead"`, set by `install.sh`, so a new session starts as

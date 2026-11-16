@@ -4,7 +4,10 @@
 set -eu
 
 here=$(cd "$(dirname "$0")" && pwd)
-config_dir="${XDG_CONFIG_HOME:-$HOME/.config}/opencode"
+# Default target is this user's OpenCode config. Point it elsewhere for a second
+# install, for example a container's config directory:
+#   OPENCODE_CONFIG_DIR=~/.local/share/vigo-agent/.config/opencode ./install.sh
+config_dir="${OPENCODE_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/opencode}"
 config="$config_dir/opencode.json"
 
 mkdir -p "$config_dir/agents"
