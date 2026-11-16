@@ -62,6 +62,8 @@ type Options = {
   }
   /** Task kinds advertised to the tools. Each tier can override its policy per kind. */
   kinds?: string[]
+  /** How long one consultant call may take before it is abandoned. */
+  timeoutMs?: number
   /** Agent id to tier, for agents whose tier cannot be read from a model list. */
   agents?: Record<string, string>
   /**
@@ -132,6 +134,24 @@ export default Plugin.define({
     const skim = options.skim ?? {}
     const rankings = loadRankings()
     const kinds = options.kinds ?? ["general", "code", "code-go", "lookup", "review", "write"]
+    const timeoutMs = options.timeoutMs ?? 45_000
+
+    /** A provider that stops answering must not hold a tool call open forever. */
+    function withTimeout<T>(work: Promise<T>, ms: number, label: string): Promise<T> {
+      return new Promise<T>((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error(`${label} timed out after ${Math.round(ms / 1000)}s`)), ms)
+        work.then(
+          (value) => {
+            clearTimeout(timer)
+            resolve(value)
+          },
+          (error) => {
+            clearTimeout(timer)
+            reject(error)
+          },
+        )
+      })
+    }
     const agentTiers = options.agents ?? {}
 
     if (order.length === 0) {
@@ -248,7 +268,13 @@ export default Plugin.define({
     }
 
     /** Try each candidate in order, the way a fallback list works. */
-    async function ask(tierName: string, prompt: string, anchorKey: string | undefined, kind?: string) {
+    async function ask(
+      tierName: string,
+      prompt: string,
+      anchorKey: string | undefined,
+      kind?: string,
+      budgetMs: number = timeoutMs,
+    ) {
       const pool = await catalogue()
       // A kind-specific table wins over the general one, so a model that is
       // strong at code but average overall can still lead a code consult.
@@ -267,7 +293,11 @@ export default Plugin.define({
           continue
         }
         try {
-          const result = await ctx.experimental.generate.text({ model: candidate.ref, prompt })
+          const result = await withTimeout(
+            ctx.experimental.generate.text({ model: candidate.ref, prompt }),
+            budgetMs,
+            `${modelKey(candidate.ref)} reply`,
+          )
           const text = (result?.text ?? "").trim()
           if (!text) {
             failures.push(`${modelKey(candidate.ref)}: empty reply`)
@@ -484,12 +514,16 @@ export default Plugin.define({
           const caller = await callerOf(context)
           const target = resolveTier((args.tier ?? "").trim().toLowerCase(), caller.tier)
           const kind = (args.kind ?? "").trim().toLowerCase() || "general"
+          const body =
+            report.length <= 3000
+              ? report
+              : `${report.slice(0, 2000)}\n\n[... ${report.length - 3000} chars omitted ...]\n\n${report.slice(-1000)}`
           const prompt = [
             SKIM_BRIEF,
             `## Task given to the ${caller.tier ?? caller.agent} tier (kind: ${kind})`,
-            task,
+            task.slice(0, 1500),
             "## Report it is handing back",
-            report,
+            body,
           ].join("\n\n")
 
           const mode = skim.mode ?? "risky"
@@ -524,7 +558,13 @@ export default Plugin.define({
           let verdict: string
           let model: string
           try {
-            const answer = await ask(target, prompt, caller.base, kind === "general" ? undefined : kind)
+            const answer = await ask(
+              target,
+              prompt,
+              caller.base,
+              kind === "general" ? undefined : kind,
+              Math.min(timeoutMs, 25_000),
+            )
             verdict = answer.text
             model = answer.model
           } catch (error) {
