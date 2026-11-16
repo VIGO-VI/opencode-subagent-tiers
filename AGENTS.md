@@ -20,6 +20,10 @@ expensive part of the session.
 - The only good reasons to do a step yourself: it is one tool call, the fact is
   already in context, or no cheaper tier can do it well. Anything else is a
   worker's job.
+- Concrete trigger, so this is not a matter of taste: before your second file
+  read or your second shell command in one turn, hand the rest of that
+  exploration to a worker. A conductor that reads three files itself has already
+  spent more than the worker would have.
 - At most three children running at once.
 - One worker, one question, one result shape. Name the paths and say what not to
   do. Ask for the lines that decide the answer, never a whole file.
