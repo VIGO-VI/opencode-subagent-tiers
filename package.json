@@ -15,7 +15,8 @@
   ],
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "format": "prettier --write plugin/index.ts"
+    "build:gui": "vite build",
+    "format": "prettier --write plugin/index.ts gui.tsx"
   },
   "devDependencies": {
     "@opencode/client": "2.3.0",
