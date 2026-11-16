@@ -82,6 +82,14 @@ const options = JSON.parse(fs.readFileSync(path.join(projectDir, "tiers.json"), 
 
 config.experimental = { ...(config.experimental ?? {}), subagent_depth: depth }
 
+// Run new sessions as the conductor and hand every session the delegation rules,
+// so a fresh session uses the workers without being told each time.
+config.default_agent = "swarm-lead"
+const rules = `${projectDir}/AGENTS.md`
+const instructions = Array.isArray(config.instructions) ? config.instructions : []
+if (!instructions.includes(rules)) instructions.push(rules)
+config.instructions = instructions
+
 const plugins = Array.isArray(config.plugins) ? config.plugins : []
 const entry = { package: projectDir, options }
 const index = plugins.findIndex((item) =>

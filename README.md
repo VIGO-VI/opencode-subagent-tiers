@@ -88,8 +88,18 @@ Two subagent levels is the working maximum, and one is the common case. Past
 that the tiers are running on models too weak to judge the work below them, so
 a deeper chain adds cost without adding an answer.
 
-Then pick `swarm-lead` as the agent for a session, or let the main agent delegate
-to it.
+What makes an agent actually delegate, in order of strength:
+
+1. `default_agent: "swarm-lead"`, set by `install.sh`, so a new session starts as
+   the conductor instead of a general agent.
+2. `instructions`, also set by `install.sh`, which injects this repository's
+   `AGENTS.md` into every session, so the delegation rules are present even when
+   the user picks another agent.
+3. The `description` of each agent, which is what the model reads when it picks a
+   subagent. They now say when to use each one rather than only what it is.
+
+Without any of those, an agent can still spawn the workers, because the
+permission graph allows it. It just has no reason to.
 
 ## Agents
 

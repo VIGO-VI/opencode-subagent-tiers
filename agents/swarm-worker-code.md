@@ -1,5 +1,5 @@
 ---
-description: Cheap worker for code reading and careful extraction. Slightly dearer than swarm-worker, used when a wrong answer costs more than the tokens.
+description: Cheap worker that reads code well. Use it for tracing a call path, judging a diff, or checking a claim, when a wrong answer would cost more than the tokens.
 mode: subagent
 model: opencode-go/deepseek-v4.1-flash#low
 steps: 16

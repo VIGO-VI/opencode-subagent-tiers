@@ -1,5 +1,5 @@
 ---
-description: Cheap narrow worker. Reads, searches, extracts and verifies one bounded thing. Cannot edit, cannot delegate.
+description: Free narrow worker. Use it for every self-contained lookup, extraction, count or check; it costs nothing and keeps the conductor's context small.
 mode: subagent
 model: opencode-go/hy4-flash-free#high
 steps: 14

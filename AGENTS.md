@@ -5,15 +5,21 @@ This repository installs a cheap delegation stack for OpenCode. When the
 
 ## Delegation
 
+Delegation is the default, not a treat. If a step can be handed to a worker, hand
+it over, because the worker runs on a free model and your own context is the
+expensive part of the session.
+
 - Send self-contained reading to a worker: locating code, quoting a section,
   running one check, counting call sites, summarising a document. Keep synthesis
   and judgement for the conductor.
+- Prefer two or three small workers over one large one. A worker that has to read
+  widely is a worker that will summarise badly.
 - Two worker profiles: `swarm-worker` runs on a free model and suits lookups and
   extraction. `swarm-worker-code` runs on a cheap paid model and suits anything
   where a wrong answer decides a change.
-- Three good reasons to do a step yourself: it is one tool call, the fact is
-  already in context, or no cheaper tier can do it well. Delegation is the
-  default for bulk reading, not a rule for everything.
+- The only good reasons to do a step yourself: it is one tool call, the fact is
+  already in context, or no cheaper tier can do it well. Anything else is a
+  worker's job.
 - At most three children running at once.
 - One worker, one question, one result shape. Name the paths and say what not to
   do. Ask for the lines that decide the answer, never a whole file.

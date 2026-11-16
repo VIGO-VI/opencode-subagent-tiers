@@ -97,11 +97,15 @@ function table(entries) {
 const rank = table(general)
 const rankByKind = code.size > 0 ? { code: table(code), "code-go": table(code), review: table(code) } : {}
 
+// By default the file becomes measured only: a hand-set prior on a different
+// scale would outrank a measured score and reorder models on two rulers.
+// `--keep-prior` merges instead, for families the index does not cover.
+const keepPrior = process.argv.includes("--keep-prior")
 const existing = JSON.parse(readFileSync(target, "utf8"))
-const merged = { ...(existing.rank ?? {}), ...rank }
+const merged = keepPrior ? { ...(existing.rank ?? {}), ...rank } : rank
 const mergedByKind = {}
 for (const [kind, entries] of Object.entries(rankByKind)) {
-  mergedByKind[kind] = { ...(existing.rankByKind?.[kind] ?? {}), ...entries }
+  mergedByKind[kind] = keepPrior ? { ...(existing.rankByKind?.[kind] ?? {}), ...entries } : entries
 }
 const updated = Object.keys(rank).length
 const kept = Object.keys(merged).length - updated
@@ -109,7 +113,7 @@ const updatedCode = Object.keys(rankByKind.code ?? {}).length
 const result = {
   ...existing,
   _note:
-    "Artificial Analysis indices where measured, the hand-set prior elsewhere. `rank` is " +
+    "Measured from OpenRouter's unified benchmarks, which publish Artificial Analysis indices. `rank` is " +
     "intelligence_index, `rankByKind.code` is coding_index. They are kept apart on purpose: an " +
     "eval score from another source is a different ruler, and averaging rulers reorders models.",
   rank: merged,

@@ -1,5 +1,5 @@
 ---
-description: Cheap conductor. Splits work, sends self-contained steps to swarm-worker or swarm-worker-code, consults the advisor only when stuck.
+description: Cheap conductor. Start here for a multi-step task: it splits the work, sends every self-contained step to a worker, and consults the advisor only when stuck.
 mode: all
 model: opencode-go/deepseek-v4.1-flash#high
 steps: 40
