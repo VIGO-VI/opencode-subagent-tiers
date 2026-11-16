@@ -7,7 +7,8 @@
 //   OPENROUTER_API_KEY=sk-or-... node scripts/rank.mjs [--task-type code] [--dry]
 //
 // Without a key this exits non-zero and leaves the vendored prior in place.
-// The endpoint is rate limited to 30 requests/minute and 500/day per account.
+// The rate limits are from the endpoint's documentation, not measured here:
+// https://openrouter.ai/docs/client-sdks/typescript/sdks/benchmarks/README.md
 
 import { writeFileSync, readFileSync } from "node:fs"
 import { fileURLToPath } from "node:url"

@@ -80,7 +80,9 @@ The runtime cap is a ceiling, not a target. The chain that actually happens is
 the permission graph: an agent can only spawn the agents its `subagent` rules
 allow. `install.sh` prints that graph's depth and sets the ceiling to 3, which
 is the whole chain this layout defines. Override with
-`SUBAGENT_DEPTH=n ./install.sh`.
+`SUBAGENT_DEPTH=n ./install.sh`. The graph is in
+`agents/swarm-lead.md` and `agents/swarm-worker-code.md`, one `subagent` allow
+rule per child.
 
 Two subagent levels is the working maximum, and one is the common case. Past
 that the tiers are running on models too weak to judge the work below them, so
@@ -278,8 +280,18 @@ measurement: nobody has run the comparison on this stack.
 
 ## Cost, measured on this machine's catalog
 
-Blended price is input + output per million tokens, from the live model list on
-2026-11-16:
+Blended price is input + output per million tokens, read from this machine's
+catalog on 2026-11-16 with:
+
+```sh
+opencode api get /api/model | python3 -c "
+import json,sys
+for m in json.load(sys.stdin)['data']:
+    c=m['cost'][0]
+    print(f\"{m['providerID']}/{m['id']} in {c['input']} out {c['output']}\")"
+```
+
+Those rows are reproduced here:
 
 | Model | Blended | Tier it lands in |
 | --- | --- | --- |
@@ -354,6 +366,26 @@ the line-32 unlock claim unless you also cite that line.
 
 The free worker's report was rejected by the model one tier up, which quoted the
 fix, before the conductor ever saw it.
+
+A run that spends on the lead tier, from a worker asking one tier up to `lead`:
+
+```
+$ grep "tier-router:" /tmp/tier-test/lead.err
+tier-router: lead/lookup for base opencode-go/hy4-flash-free ->
+  opencode-go/hy3 0.30x rank 50 |
+  opencode-go/deepseek-v4.1-flash 0.31x rank 72 |
+  console-openrouter/deepseek/deepseek-v4.1-flash-1017 0.31x rank 72
+
+$ grep -o "\[lead[^]]*\]" /tmp/tier-test/lead.out
+[lead · opencode-go/hy3 · 188/10000 tokens]
+```
+
+That 10000 is 25% of the 40000 floor, which is where a fresh session starts
+before it has measured any of its own tokens. The ratios look low because the
+base was the free model, whose price is 0, so the anchor falls back to the
+median catalog price. That is also why the `2.50x` lines in the earlier snippet
+differ from the `8.00x` seen when the base was a paid model: the band is relative
+to whatever model the session is on.
 
 ## Limits
 
