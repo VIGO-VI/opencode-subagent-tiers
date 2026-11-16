@@ -68,9 +68,14 @@ model on top, and does not need a fork.
 ```
 
 It copies the agents into `~/.config/opencode/agents/`, sets
-`experimental.subagent_depth` to 3, and adds the plugin entry with the tier
+`experimental.subagent_depth` to 5, and adds the plugin entry with the tier
 options from `tiers.json` to `~/.config/opencode/opencode.json`. It preserves
 every other key. Re-run it after editing `tiers.json`.
+
+The runtime cap is a ceiling, not a target. The chain that actually happens is
+the permission graph: an agent can only spawn the agents its `subagent` rules
+allow. `install.sh` prints that graph's depth and sets the ceiling to 5, which
+is more than this layout needs. Override with `SUBAGENT_DEPTH=n ./install.sh`.
 
 Then pick `swarm-lead` as the agent for a session, or let the main agent delegate
 to it.
@@ -84,14 +89,17 @@ to it.
 | `swarm-lead` | cheap flash | splits work, holds at most three children, hands back with a skim |
 | `advisor` | strong model | reads files itself, one decision, never edits |
 
-The chain is three deep: the session agent hands a piece to `swarm-lead`, the
-lead hands lookups to `swarm-worker-code` or `swarm-worker`, and
+The chain is up to three deep: the session agent hands a piece to `swarm-lead`,
+the lead hands lookups to `swarm-worker-code` or `swarm-worker`, and
 `swarm-worker-code` may hand its own independent lookups to `swarm-worker`. Work
 comes back up one level at a time, and each level skims the report below it, so
 a cheap mistake is caught before it reaches the model the user is talking to.
 
-`subagent_depth: 3` is what allows this. With the default of 1 a subagent cannot
-start another one, so the chain would stop at the first level.
+Depth follows the profile, not a number. A one-line lookup goes to
+`swarm-worker`, which cannot spawn anything, so that branch ends immediately. A
+harder piece goes to `swarm-worker-code`, which may split once. A whole subtask
+goes to `swarm-lead`, which may split again. Choosing the profile by complexity
+is how the chain gets shorter or longer.
 
 ## Tools
 
@@ -246,7 +254,9 @@ fix, before the conductor ever saw it.
   contradicts its own evidence, not a subtly wrong claim that reads well.
 - Budgets are estimates from character counts, charged per call. They are for
   keeping spend bounded, not for accounting.
-- `subagent_depth` is experimental. A future release can change its name.
+- `subagent_depth` is experimental. A future release can change its name. The
+  install sets it to 5 as a ceiling because that is more than enough for this
+  layout; the permission graph, not the number, decides the real chain.
 - The tier ladder is per tier, not per agent instance. Two agents mapped to the
   same tier consult the same level above.
 
