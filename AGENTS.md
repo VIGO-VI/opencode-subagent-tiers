@@ -18,9 +18,11 @@ expensive part of the session.
   and judgement for the conductor.
 - Prefer two or three small workers over one large one. A worker that has to read
   widely is a worker that will summarise badly.
-- Two worker profiles: `swarm-worker` runs on a free model and suits lookups and
-  extraction. `swarm-worker-code` runs on a cheap paid model and suits anything
-  where a wrong answer decides a change.
+- Worker ladder, cheapest first. Start every job with `swarm-worker`, which runs
+  on a free model. Escalate to `swarm-worker-code`, which costs money, only when
+  the free report came back missing its evidence or contradicting itself. A
+  conductor that opens with the paid worker has paid for a check it never
+  needed.
 - The only good reasons to do a step yourself: it is one tool call, the fact is
   already in context, or no cheaper tier can do it well. Anything else is a
   worker's job.

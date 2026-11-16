@@ -39,8 +39,9 @@ for bulk reading, not a rule for everything.
 
 Which worker:
 
-- `swarm-worker` runs on a free model. Use it for lookups, extraction, counting,
-  summarising a document, and checks whose failure would be cheap to notice.
+- `swarm-worker` runs on a free model. Start here for every job: lookups,
+  extraction, counting, summarising, and checks whose failure would be cheap to
+  notice. It costs nothing, so a wasted report costs only a retry.
 - `swarm-worker-code` runs on a cheap paid model that reads code better. Use it
   when the answer decides a change: tracing a call path, judging a diff, saying
   why a test fails, checking a claim against the code.
