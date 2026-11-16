@@ -1,4 +1,6 @@
-import { readFileSync } from "node:fs"
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import { Plugin } from "@opencode/plugin"
 
 import {
@@ -64,6 +66,12 @@ type Options = {
   kinds?: string[]
   /** How long one consultant call may take before it is abandoned. */
   timeoutMs?: number
+  /**
+   * Where a handoff report is delivered. `parent` posts it into the parent
+   * session through the session API, so delivery cannot be lost or paraphrased
+   * by the child. `child` only returns it as the tool result, the old behaviour.
+   */
+  handoff?: { deliver?: "parent" | "child"; maxChars?: number }
   /** Agent id to tier, for agents whose tier cannot be read from a model list. */
   agents?: Record<string, string>
   /**
@@ -511,9 +519,45 @@ export default Plugin.define({
           const report = String(args.report ?? "").trim().slice(0, maxChars)
           if (!task || !report) throw new Error("handoff needs both the task and the report")
 
+          // Persist before any model call, so an interrupted skim still leaves
+          // the report on disk.
+          let saved: string | undefined
+          try {
+            const dir = join(tmpdir(), "opencode-handoff")
+            mkdirSync(dir, { recursive: true })
+            saved = join(dir, `${context.sessionID}.md`)
+            writeFileSync(saved, `# ${task}\n\n${report}\n`)
+          } catch {
+            saved = undefined
+          }
+
           const caller = await callerOf(context)
           const target = resolveTier((args.tier ?? "").trim().toLowerCase(), caller.tier)
           const kind = (args.kind ?? "").trim().toLowerCase() || "general"
+          const deliverTo = options.handoff?.deliver ?? "parent"
+          const deliverLimit = options.handoff?.maxChars ?? 8000
+
+          /** Post the report into the parent session, so the child cannot drop it. */
+          async function deliver(note: string) {
+            if (deliverTo !== "parent" || !own?.parentID) return false
+            const body =
+              report.length <= deliverLimit
+                ? report
+                : `${report.slice(0, deliverLimit)}\n\n[truncated at ${deliverLimit} chars, full report: ${saved ?? "not saved"}]`
+            const text = [
+              `[handoff · ${caller.agent} · ${note}]`,
+              `Task: ${task.slice(0, 400)}`,
+              "",
+              body,
+              saved ? `\nSaved: ${saved}` : "",
+            ].join("\n")
+            try {
+              await ctx.session.synthetic({ sessionID: own.parentID, text })
+              return true
+            } catch {
+              return false
+            }
+          }
           const body =
             report.length <= 3000
               ? report
@@ -533,9 +577,12 @@ export default Plugin.define({
               (skim.kinds ?? ["code", "code-go", "review", "write"]).includes(kind) &&
               report.length >= (skim.minChars ?? 200))
           if (!skimmable) {
+            const sent = await deliver(`no skim · ${kind}`)
             return {
-              content: `[no skim · ${target} · ${kind} report is ${report.length} chars]\n\n${report}`,
-              metadata: { tier: target, skim: "not-needed", mode },
+              content: sent
+                ? `[delivered to your parent · no skim · ${kind}]\n\nYour report reached the parent session; you can end with one line.`
+                : `[no skim · ${target} · ${kind} report is ${report.length} chars]\n\n${report}`,
+              metadata: { tier: target, skim: "not-needed", mode, delivered: sent },
             }
           }
 
@@ -549,9 +596,12 @@ export default Plugin.define({
             reserved,
           )
           if (!verdictBudget.allowed) {
+            const sent = await deliver("skim skipped · allowance spent")
             return {
-              content: `[skim skipped · ${target} allowance ${Math.round(verdictBudget.limit)} spent]\n\n${report}`,
-              metadata: { tier: target, skim: "skipped", budget: Math.round(verdictBudget.limit) },
+              content: sent
+                ? `[delivered to your parent · skim skipped]\n\nYour report reached the parent session; you can end with one line.`
+                : `[skim skipped · ${target} allowance ${Math.round(verdictBudget.limit)} spent]\n\n${report}`,
+              metadata: { tier: target, skim: "skipped", budget: Math.round(verdictBudget.limit), delivered: sent },
             }
           }
 
@@ -568,23 +618,31 @@ export default Plugin.define({
             verdict = answer.text
             model = answer.model
           } catch (error) {
+            const reason = (error as Error)?.message ?? String(error)
+            const sent = await deliver(`skim failed · ${reason}`)
             return {
-              content: `[skim failed · ${target}]\n\n${report}\n\nskimmer error: ${
-                (error as Error)?.message ?? String(error)
-              }`,
-              metadata: { tier: target, skim: "failed" },
+              content: sent
+                ? `[delivered to your parent · skim failed: ${reason}]\n\nYour report reached the parent session; you can end with one line.`
+                : `[skim failed · ${target}]\n\n${report}\n\nskimmer error: ${reason}`,
+              metadata: { tier: target, skim: "failed", delivered: sent },
             }
           }
 
           const charged = estimateTokens(prompt, verdict)
           await charge(slot.ledgerKey, slot.ledger, target, slot.spent + charged)
+          const clean = verdict.trim().toUpperCase().startsWith("OK")
+          const sent = await deliver(`skim by ${target} · ${model} · ${clean ? "ok" : "problem"}\n${verdict.slice(0, 600)}`)
           return {
-            content: `[skim by ${target} · ${model}]\n${verdict}\n\n---\n\n${report}`,
+            content: sent
+              ? `[delivered to your parent · skim by ${target} · ${clean ? "ok" : "problem"}]\n${verdict.slice(0, 600)}\n\n` +
+                "Your report reached the parent session; end with one line."
+              : `[skim by ${target} · ${model}]\n${verdict}\n\n---\n\n${report}`,
             metadata: {
               tier: target,
               model,
               callerTier: caller.tier ?? null,
-              skim: verdict.trim().toUpperCase().startsWith("OK") ? "ok" : "problem",
+              skim: clean ? "ok" : "problem",
+              delivered: sent,
               tokens: charged,
               budget: Math.round(verdictBudget.limit),
             },

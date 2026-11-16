@@ -137,8 +137,17 @@ consult({
 ```
 
 `handoff` ends a worker's turn with a report, and has the tier above skim it
-first. A `PROBLEM` verdict comes back to the worker so it can fix the report
-before the conductor sees it.
+first. The report is then posted into the **parent session** through the session
+API, not merely returned to the worker.
+
+That last part was a defect, found in use: a tool result goes into the calling
+session's context, and the parent only receives the child's final assistant
+message. A worker that answered "handed off successfully" therefore delivered
+nothing, and one that summarised its own tool result delivered a paraphrase.
+Three of five handoffs lost the body that way. Delivery now does not depend on
+the model, and the report is written to a file under the system temp directory
+before the skim call, so an interrupted skim cannot lose it either. Set
+`handoff.deliver` to `child` for the old behaviour.
 
 A skimmer that stops answering cannot hold a worker's turn open: every consultant
 call has a deadline, 60 seconds for a consult and 40 for a skim, and a report

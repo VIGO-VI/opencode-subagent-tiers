@@ -190,5 +190,9 @@
   "pricing": {
     "_comment": "Declare what a model costs you when it differs from list price. Example: a Claude plan makes anthropic/* free; a BYOK key can make a provider cheaper.",
     "console-openrouter/*:free": "free"
+  },
+  "handoff": {
+    "deliver": "parent",
+    "maxChars": 8000
   }
 }
