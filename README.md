@@ -289,6 +289,10 @@ fix, before the conductor ever saw it.
   next step.
 - The skim is one short prompt with no tools. It catches a report that
   contradicts its own evidence, not a subtly wrong claim that reads well.
+- Reports travel as text through each level, which is the pattern Anthropic
+  warns loses fidelity. Their alternative is subagents writing artifacts and
+  passing references. That is more faithful and more expensive, and this plugin
+  chooses the cheap side on purpose.
 - Budgets are estimates from character counts, charged per call. They are for
   keeping spend bounded, not for accounting.
 - `subagent_depth` is experimental. A future release can change its name. The
