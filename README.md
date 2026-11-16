@@ -155,6 +155,11 @@ whose skim times out comes back unskimmed with a note. The skim also receives at
 most 3000 characters of a report, head and tail, because a skimmer that reads a
 whole long report costs more than the report was worth.
 
+The skim budget is sized for a skim, not for the session: a 3% share with a 20k
+cap over a 100k floor, because a skim costs a fairly constant 400 to 1500 tokens
+and a share of a young session was too small to allow even one. A skipped skim
+never blocks delivery; the report still reaches the parent with a note.
+
 The skim is skipped by default (`mode: "risky"`) unless the work is a code,
 review or write task and the report is at least 200 characters. A lookup whose
 answer is one quoted line is not worth a second model reading it, and with many

@@ -451,9 +451,13 @@ export default Plugin.define({
           const total = slot.spent + charged
           await charge(slot.ledgerKey, slot.ledger, target, total)
           await ctx.storage.set(usesKey, { ...uses, [target]: used + 1 })
+          // A bypassed call is spending against the hard cap, so show that
+          // ceiling rather than the share it just crossed.
+          const ceiling =
+            verdict.bypassed && typeof policy.hardCap === "number" ? policy.hardCap : verdict.limit
           // Never put a non-finite number in the result: the harness drops it.
-          const shown = Number.isFinite(verdict.limit)
-            ? `${total}/${Math.round(verdict.limit)}`
+          const shown = Number.isFinite(ceiling)
+            ? `${total}/${Math.round(ceiling)}${verdict.bypassed ? " bypassed" : ""}`
             : `${total}`
           return {
             content: `[${target} · ${answer.model} · ${shown} tokens]\n\n${reply}`,
@@ -464,7 +468,7 @@ export default Plugin.define({
               callerTier: caller.tier ?? "unknown",
               base: caller.base ?? "unknown",
               tokens: charged,
-              budget: Number.isFinite(verdict.limit) ? Math.round(verdict.limit) : null,
+              budget: Number.isFinite(ceiling) ? Math.round(ceiling) : null,
               budgetBound: verdict.bound,
               bypassed: verdict.bypassed,
               uses: `${used + 1}${policy.maxUses === undefined ? "" : `/${policy.maxUses}`}`,

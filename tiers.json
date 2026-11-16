@@ -166,9 +166,9 @@
     }
   },
   "skim": {
-    "share": 0.02,
+    "share": 0.03,
     "hardCap": 20000,
-    "floor": 40000,
+    "floor": 100000,
     "mode": "risky",
     "kinds": [
       "code",
