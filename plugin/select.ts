@@ -222,3 +222,55 @@ export function resolveCandidates(
   }
   return pickCandidates(spec, pool, anchorKey, fallbackRank, kind)
 }
+
+export type BudgetSpec = {
+  /** Fraction of the session's measured tokens this tier may spend. */
+  share?: number
+  /** Absolute ceiling in tokens, whatever the session has spent. */
+  hardCap?: number
+  /** Token floor used as the base while the session is still small. */
+  floor?: number
+  /** Whether a stated justification may exceed the share, up to the hard cap. */
+  bypass?: boolean
+  /** Calls allowed for this tier per root session, the way `max_uses` works upstream. */
+  maxUses?: number
+  /** Reply length cap in tokens. Truncated as a backstop, requested in the prompt. */
+  maxReplyTokens?: number
+}
+
+export type BudgetVerdict = {
+  allowed: boolean
+  /** The effective limit in tokens for this call. */
+  limit: number
+  /** Which limit bound it: the share, the hard cap, or neither. */
+  bound: "share" | "hardCap" | "none"
+  bypassed: boolean
+}
+
+/**
+ * Decide whether one more call fits. The share is a fraction of the session's
+ * measured tokens, so a busy session earns more room for the expensive tier
+ * without any fixed number. A floor keeps the first calls working before the
+ * session has spent anything. A justification can lift the share, never the
+ * hard cap.
+ */
+export function budgetFor(
+  spec: BudgetSpec,
+  sessionTokens: number,
+  spent: number,
+  cost: number,
+  justification?: string,
+): BudgetVerdict {
+  const base = Math.max(sessionTokens, spec.floor ?? 0)
+  const shareLimit = spec.share === undefined ? Number.POSITIVE_INFINITY : spec.share * base
+  const hardCap = spec.hardCap ?? Number.POSITIVE_INFINITY
+  const limit = Math.min(shareLimit, hardCap)
+  const bound = shareLimit <= hardCap ? (Number.isFinite(shareLimit) ? "share" : "none") : "hardCap"
+  const wanted = spent + cost
+  if (wanted <= limit) return { allowed: true, limit, bound, bypassed: false }
+  const reason = (justification ?? "").trim()
+  if (spec.bypass && reason.length >= 8 && wanted <= hardCap) {
+    return { allowed: true, limit, bound, bypassed: true }
+  }
+  return { allowed: false, limit, bound, bypassed: false }
+}

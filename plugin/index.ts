@@ -2,10 +2,12 @@ import { readFileSync } from "node:fs"
 import { Plugin } from "@opencode/plugin"
 
 import {
+  budgetFor,
   blendedPrice,
   modelKey,
   parseModel,
   resolveCandidates,
+  type BudgetSpec,
   type Candidate,
   type Resolved,
   type TierSpec,
@@ -40,10 +42,22 @@ type Options = {
   fallback?: string
   /** Hard cap on a brief or report, in characters. */
   maxChars?: number
-  /** Consult budget in tokens, per session tree and per tier. `perTier` wins. */
-  budget?: { tokens?: number; perTier?: Record<string, number | undefined> }
-  /** Skim budget for `handoff`, kept separate so a review is never starved. */
-  skim?: { tokens?: number; perTier?: Record<string, number | undefined> }
+  /**
+   * Per-tier spend policy. `share` is a fraction of the session's measured
+   * tokens, `hardCap` is an absolute ceiling, `floor` is the base used before
+   * the session has spent anything, and `bypass` lets a stated reason lift the
+   * share up to the hard cap.
+   */
+  budget?: { floor?: number; tiers?: Record<string, BudgetSpec> }
+  /**
+   * The handoff skim has its own policy. `mode` is `risky` (skim only reports
+   * where a wrong answer decides a change), `always`, or `off`.
+   */
+  skim?: BudgetSpec & {
+    mode?: "risky" | "always" | "off"
+    kinds?: string[]
+    minChars?: number
+  }
   /** Task kinds advertised to the tools. Each tier can override its policy per kind. */
   kinds?: string[]
   /** Agent id to tier, for agents whose tier cannot be read from a model list. */
@@ -73,7 +87,9 @@ was skipped, or a result that does not match what was asked.
 Reply in exactly one of these two shapes:
 OK
 or
-PROBLEM: one sentence naming the defect, then one concrete correction.`
+PROBLEM: one sentence naming the defect, then one concrete correction.
+End with a line starting "NEXT: " giving the single next action, so the caller can
+continue from that line alone without re-reading the report.`
 
 function loadRankings() {
   for (const relative of ["./rankings.json", "../rankings.json"]) {
@@ -169,13 +185,23 @@ export default Plugin.define({
       return current
     }
 
-    function allowance(
-      spec: { tokens?: number; perTier?: Record<string, number | undefined> },
-      tier: string,
-    ) {
-      const perTier = spec.perTier?.[tier]
-      if (typeof perTier === "number") return perTier
-      return spec.tokens ?? Number.POSITIVE_INFINITY
+    /** Tokens the root session has measured so far, from its own messages. */
+    async function measuredTokens(sessionID: string) {
+      const root = await rootSession(sessionID)
+      const messages = await ctx.session.context({ sessionID: root }).catch(() => [])
+      let total = 0
+      for (const message of messages) {
+        const tokens = (message as { tokens?: { input?: number; output?: number; reasoning?: number } }).tokens
+        if (!tokens) continue
+        total += Number(tokens.input ?? 0) + Number(tokens.output ?? 0) + Number(tokens.reasoning ?? 0)
+      }
+      return total
+    }
+
+    /** The policy for one tier, with the shared floor folded in. */
+    function budgetSpec(tier: string): BudgetSpec {
+      const spec = options.budget?.tiers?.[tier] ?? {}
+      return { floor: options.budget?.floor ?? 0, ...spec }
     }
 
     /** Read a ledger and check the next charge fits. */
@@ -256,7 +282,18 @@ export default Plugin.define({
       return { agent: id, tier, base: base ? modelKey(base) : undefined }
     }
 
-    const shared = `Tiers, low to high: ${order.join(", ")}. Budgets are tokens, shared by the whole session tree, so a worker and its conductor draw from the same allowance.`
+    const shares = order
+      .map((tier) => {
+        const spec = options.budget?.tiers?.[tier] ?? {}
+        const share = spec.share === undefined ? "no share" : `${Math.round(spec.share * 100)}%`
+        const cap = spec.hardCap === undefined ? "" : `, cap ${Math.round(spec.hardCap)}`
+        return `${tier} ${share}${cap}`
+      })
+      .join("; ")
+    const shared =
+      `Tiers, low to high: ${order.join(", ")}. ` +
+      `Budgets are shares of the session's measured tokens (${shares}), shared by the whole session tree, ` +
+      "so a worker and its conductor draw from the same allowance."
 
     await ctx.tool.transform((editor) => {
       editor.add({
@@ -266,7 +303,9 @@ export default Plugin.define({
           `${shared} Omit tier to reach one tier above your own; "same" is a clean copy of your own. ` +
           "Use it when genuinely stuck: a decision that is expensive to reverse, the same error twice, " +
           "or a check before calling risky work done. Never for a fact a worker can look up. " +
-          "It shares only what you write in the brief, never the conversation.",
+          "It shares only what you write in the brief, never the conversation. " +
+          "Each tier may spend a share of the session's measured tokens, with a hard cap above it, " +
+          "and a reason lifts the share but never the cap.",
         options: { codemode: false },
         input: {
           type: "object",
@@ -284,6 +323,13 @@ export default Plugin.define({
                 `What kind of work this is, so the tier can pick a model that fits: ${kinds.join(", ")}. ` +
                 "Defaults to general.",
             },
+            reason: {
+              type: "string",
+              description:
+                "One line saying why this call must exceed the tier's share of the session, " +
+                "for example the same failure twice or a decision that is expensive to reverse. " +
+                "It can never exceed the hard cap.",
+            },
             tier: {
               type: "string",
               description: `"same", or one of: ${order.join(", ")}. Omit to reach one tier above yours.`,
@@ -293,13 +339,14 @@ export default Plugin.define({
           additionalProperties: false,
         },
         execute: async (input, context) => {
-          const args = input as { brief: string; question: string; tier?: string; kind?: string }
+          const args = input as { brief: string; question: string; tier?: string; kind?: string; reason?: string }
           const brief = String(args.brief ?? "").trim()
           const question = String(args.question ?? "").trim()
           if (!brief || !question) throw new Error("consult needs both a brief and a question")
 
           const caller = await callerOf(context)
           const target = resolveTier((args.tier ?? "").trim().toLowerCase(), caller.tier)
+          const policy = budgetSpec(target)
           const prompt = [
             tiers[target]?.brief ?? DEFAULT_BRIEF,
             `You are the "${tiers[target]?.label ?? target}" consultant.`,
@@ -308,27 +355,49 @@ export default Plugin.define({
             "## Question",
             question,
             CONSULT_FORMAT,
+            policy.maxReplyTokens === undefined
+              ? ""
+              : `Keep the whole answer under ${policy.maxReplyTokens} tokens.`,
+
           ].join("\n\n")
 
-          const limit = allowance(budget, target)
           const reserved = estimateTokens(prompt) + 400
-          const slot = await reserve(context.sessionID, "consult", target, reserved, limit)
-          if (!slot.fits) {
+          const slot = await reserve(context.sessionID, "consult", target, reserved, Number.POSITIVE_INFINITY)
+          const sessionTokens = await measuredTokens(context.sessionID)
+          const usesKey = `uses/${await rootSession(context.sessionID)}`
+          const uses = ((await ctx.storage.get(usesKey)) ?? {}) as Record<string, number>
+          const used = Number(uses[target] ?? 0)
+          if (policy.maxUses !== undefined && used >= policy.maxUses) {
             throw new Error(
-              `consult: the "${target}" allowance for this session is ${limit} tokens and ` +
-                `${slot.spent} is spent, so this ${reserved}-token call does not fit. ` +
-                "Answer from what you have, or hand the lookup to a worker.",
+              `consult: the "${target}" tier allows ${policy.maxUses} calls per session and they are used. ` +
+                "Answer from what you have.",
+            )
+          }
+          const verdict = budgetFor(policy, sessionTokens, slot.spent, reserved, args.reason)
+          if (!verdict.allowed) {
+            throw new Error(
+              `consult: the "${target}" tier may spend ${Math.round(verdict.limit)} tokens ` +
+                `(${verdict.bound}), the session has measured ${sessionTokens} tokens, and ` +
+                `${slot.spent} is already spent, so this ${reserved}-token call does not fit. ` +
+                "Pass a one-line `reason` to exceed the share up to the hard cap, " +
+                "or answer from what you have.",
             )
           }
 
           const kind = (args.kind ?? "").trim().toLowerCase() || undefined
           const answer = await ask(target, prompt, caller.base, kind)
-          const charged = estimateTokens(prompt, answer.text)
+          const cap = policy.maxReplyTokens
+          const reply =
+            cap !== undefined && estimateTokens(answer.text) > cap
+              ? `${answer.text.slice(0, cap * 4).trimEnd()}\n[capped at ${cap} tokens]`
+              : answer.text
+          const charged = estimateTokens(prompt, reply)
           const total = slot.spent + charged
           await charge(slot.ledgerKey, slot.ledger, target, total)
-          const shown = Number.isFinite(limit) ? `${total}/${limit}` : `${total}`
+          await ctx.storage.set(usesKey, { ...uses, [target]: used + 1 })
+          const shown = `${total}/${Math.round(verdict.limit)}`
           return {
-            content: `[${target} · ${answer.model} · ${shown} tokens]\n\n${answer.text}`,
+            content: `[${target} · ${answer.model} · ${shown} tokens]\n\n${reply}`,
             metadata: {
               tier: target,
               model: answer.model,
@@ -336,7 +405,10 @@ export default Plugin.define({
               callerTier: caller.tier ?? null,
               base: caller.base ?? null,
               tokens: charged,
-              budget: Number.isFinite(limit) ? limit : null,
+              budget: Math.round(verdict.limit),
+              budgetBound: verdict.bound,
+              bypassed: verdict.bypassed,
+              uses: `${used + 1}${policy.maxUses === undefined ? "" : `/${policy.maxUses}`}`,
             },
           }
         },
@@ -389,13 +461,32 @@ export default Plugin.define({
             report,
           ].join("\n\n")
 
-          const limit = allowance(skim, target)
-          const reserved = estimateTokens(prompt) + 200
-          const slot = await reserve(context.sessionID, "skim", target, reserved, limit)
-          if (!slot.fits) {
+          const mode = skim.mode ?? "risky"
+          const skimmable =
+            mode === "always" ||
+            (mode === "risky" &&
+              (skim.kinds ?? ["code", "code-go", "review", "write"]).includes(kind) &&
+              report.length >= (skim.minChars ?? 200))
+          if (!skimmable) {
             return {
-              content: `[skim skipped · ${target} allowance spent]\n\n${report}`,
-              metadata: { tier: target, skim: "skipped", budget: limit },
+              content: `[no skim · ${target} · ${kind} report is ${report.length} chars]\n\n${report}`,
+              metadata: { tier: target, skim: "not-needed", mode },
+            }
+          }
+
+          const reserved = estimateTokens(prompt) + 200
+          const slot = await reserve(context.sessionID, "skim", target, reserved, Number.POSITIVE_INFINITY)
+          const sessionTokens = await measuredTokens(context.sessionID)
+          const verdictBudget = budgetFor(
+            { floor: options.budget?.floor ?? 0, ...skim },
+            sessionTokens,
+            slot.spent,
+            reserved,
+          )
+          if (!verdictBudget.allowed) {
+            return {
+              content: `[skim skipped · ${target} allowance ${Math.round(verdictBudget.limit)} spent]\n\n${report}`,
+              metadata: { tier: target, skim: "skipped", budget: Math.round(verdictBudget.limit) },
             }
           }
 
@@ -424,6 +515,7 @@ export default Plugin.define({
               callerTier: caller.tier ?? null,
               skim: verdict.trim().toUpperCase().startsWith("OK") ? "ok" : "problem",
               tokens: charged,
+              budget: Math.round(verdictBudget.limit),
             },
           }
         },

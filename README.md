@@ -128,10 +128,45 @@ consult({
 first. A `PROBLEM` verdict comes back to the worker so it can fix the report
 before the conductor sees it.
 
-Budgets are tokens, not call counts, and they are keyed by the root session, so
-a conductor and every worker under it draw from the same allowance per tier:
-250k for the worker tier, 120k for the lead tier, 30k for the advisor tier by
-default. Small briefs leave room for several questions.
+The skim is skipped by default (`mode: "risky"`) unless the work is a code,
+review or write task and the report is at least 200 characters. A lookup whose
+answer is one quoted line is not worth a second model reading it, and with many
+workers the skips matter more than the skims.
+
+Budgeting follows the one vendor that documents an advisor, rather than a
+number invented here. Anthropic's advisor tool exposes two cost controls: a
+count of advisor calls per turn (`max_uses`, unlimited by default, shown as 5 in
+their example) and an output cap (`max_tokens`, minimum 1024, shown as 2048).
+For a conversation-level ceiling their guidance is to count calls in the client
+and stop offering the tool at the cap. They also say to enable caching only when
+three or more advisor calls are expected
+([advisor tool docs](https://platform.claude.com/docs/en/agents-and-tools/tool-use/advisor-tool)).
+
+This plugin maps that onto the tiers:
+
+| Anthropic's control | Here |
+| --- | --- |
+| `max_uses` per turn | `maxUses` per root session: 5 advisor, 12 lead, 40 worker |
+| `max_tokens` on the advisor | `maxReplyTokens`: 700 advisor and lead, 600 worker, 300 skim |
+| count calls client-side, then remove the tool | the same counters in plugin storage, checked before each call |
+
+`maxUses` is stricter than the vendor's because a turn boundary is not visible
+from a tool call, and a session can hold several turns.
+
+On top of that sits a share of the session's measured tokens: 5% for the advisor
+tier with a 60k hard cap, 25% for the lead tier with a 200k cap, 90% for the
+worker tier with a 400k cap, over a 40k floor. That one is this plugin's
+addition, not vendor guidance, and it exists because advisor calls are made from
+child sessions where a per-turn counter cannot see the parent's spend. The base
+is measured: the plugin sums the token counts OpenCode records on the root
+session's messages, so a long session earns more room. Worker sessions are
+excluded from that sum, which makes the ceiling stricter than it looks, never
+looser.
+
+The share is soft and the hard cap is not. A caller that states a `reason` can
+cross the share up to the cap, and the call is marked `bypassed` in its
+metadata. After a `handoff`, the skim ends with a `NEXT:` line, so a follow-up
+consult can carry that one line and nothing else.
 
 ## How a tier is resolved
 
@@ -221,6 +256,26 @@ without the chain on your own repository and compare cost and accepted diffs.
 The resolver log and the token counters in each tool result are there to make
 that measurable.
 
+### Why the skim does not balloon the strong model's context
+
+A skim sends the report, not the conversation and not the source files. So the
+strong tier's extra input per handback is the report, which is the same text the
+conductor has to read anyway. The cost of checking k reports is therefore
+bounded by k times the report size at the next tier's price, and it is the
+source reading that got cheaper: a worker may read 5k tokens of code for free
+and return 300 tokens.
+
+Concretely, from the price table below, a 300-token report skimmed at the lead
+tier costs `300 * 0.75 / 1e6` = $0.0002. The same 300-token report skimmed at
+the advisor tier (`qwen4-max`, $6 per million blended) is `300 * 6 / 1e6` =
+$0.0018. Ten of those is under two cents.
+
+The risk the question raises is real in one case: many workers, each returning a
+long confused report, all skimmed by the expensive tier. That is why the default
+is risky-only, with a 2% share and a 20k cap on skims, and why the report is
+capped by `maxChars`. Past that, the arithmetic above is the argument, not a
+measurement: nobody has run the comparison on this stack.
+
 ## Cost, measured on this machine's catalog
 
 Blended price is input + output per million tokens, from the live model list on
@@ -306,6 +361,9 @@ fix, before the conductor ever saw it.
   request, but only within the same provider
   ([docs](https://opencode.ai/docs/build/plugins/server)), so it cannot move a
   Claude agent onto a DeepSeek tier. This plugin does not register that hook.
+- Anthropic validates that an advisor is at least as capable as its executor.
+  Here the tier ladder assumes the same, and enforces it only through price,
+  which is a proxy rather than a capability check.
 - The skim is one short prompt with no tools. It catches a report that
   contradicts its own evidence, not a subtly wrong claim that reads well.
 - Reports travel as text through each level, which is the pattern Anthropic

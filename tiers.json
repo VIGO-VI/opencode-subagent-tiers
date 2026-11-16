@@ -139,19 +139,45 @@
     }
   },
   "budget": {
-    "tokens": 250000,
-    "perTier": {
-      "worker": 250000,
-      "lead": 120000,
-      "advisor": 30000
+    "floor": 40000,
+    "tiers": {
+      "worker": {
+        "share": 0.9,
+        "hardCap": 400000,
+        "bypass": true,
+        "maxUses": 40,
+        "maxReplyTokens": 600
+      },
+      "lead": {
+        "share": 0.25,
+        "hardCap": 200000,
+        "bypass": true,
+        "maxUses": 12,
+        "maxReplyTokens": 700
+      },
+      "advisor": {
+        "share": 0.05,
+        "hardCap": 60000,
+        "bypass": true,
+        "maxUses": 5,
+        "maxReplyTokens": 700
+      }
     }
   },
   "skim": {
-    "tokens": 6000,
-    "perTier": {
-      "lead": 8000,
-      "advisor": 6000
-    }
+    "share": 0.02,
+    "hardCap": 20000,
+    "floor": 40000,
+    "mode": "risky",
+    "kinds": [
+      "code",
+      "code-go",
+      "review",
+      "write"
+    ],
+    "minChars": 200,
+    "maxUses": 12,
+    "maxReplyTokens": 300
   },
   "agents": {
     "swarm-worker": "worker",

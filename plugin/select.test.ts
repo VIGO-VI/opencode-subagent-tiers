@@ -2,6 +2,7 @@ import assert from "node:assert/strict"
 import { test } from "node:test"
 
 import {
+  budgetFor,
   blendedPrice,
   matches,
   modelKey,
@@ -207,4 +208,31 @@ test("free slots cap how many free candidates are tried before paid ones", () =>
 
 test("newestOfFamily returns undefined when the family is absent", () => {
   assert.equal(newestOfFamily("nope", pool), undefined)
+})
+
+test("a share budget grows with the session and is capped hard", () => {
+  const spec = { share: 0.05, hardCap: 20_000, floor: 40_000 }
+  // 5% of 40k floor = 2000, so the first 1900 tokens fit
+  assert.equal(budgetFor(spec, 0, 0, 1900).allowed, true)
+  assert.equal(budgetFor(spec, 0, 0, 2100).allowed, false)
+  // 5% of 200k = 10k
+  assert.equal(budgetFor(spec, 200_000, 0, 9_000).allowed, true)
+  // 5% of 1M = 50k, but the hard cap is 20k
+  const capped = budgetFor(spec, 1_000_000, 0, 25_000)
+  assert.equal(capped.allowed, false)
+  assert.equal(capped.bound, "hardCap")
+  assert.equal(capped.limit, 20_000)
+})
+
+test("a justification lifts the share but never the hard cap", () => {
+  const spec = { share: 0.01, hardCap: 20_000, floor: 0, bypass: true }
+  const refused = budgetFor(spec, 100_000, 900, 500)
+  assert.equal(refused.allowed, false)
+  const allowed = budgetFor(spec, 100_000, 900, 500, "the same test failed twice and the answer decides the design")
+  assert.equal(allowed.allowed, true)
+  assert.equal(allowed.bypassed, true)
+  const tooShort = budgetFor(spec, 100_000, 900, 500, "stuck")
+  assert.equal(tooShort.allowed, false)
+  const overCap = budgetFor({ ...spec, hardCap: 1_000 }, 100_000, 900, 500, "a long enough justification here")
+  assert.equal(overCap.allowed, false)
 })
