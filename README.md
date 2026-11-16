@@ -272,6 +272,11 @@ It reads OpenRouter's unified benchmarks, which aggregate Artificial Analysis,
 Design Arena and OpenRouter's own GPQA, tau-bench and web-search evaluations, and
 writes wildcarded family scores. Rate limit is 30 requests a minute, 500 a day.
 
+The key is read from the environment and never written anywhere. An OpenRouter
+integration inside OpenCode Console gives you the models through
+`opencode.ai/inference/...`, not a key that `openrouter.ai/api/v1/benchmarks`
+accepts, so refreshing the table needs an OpenRouter key of its own.
+
 ## How much of this is evidence, and how much is judgement
 
 The rule this README follows: a number is either measured here with the command
