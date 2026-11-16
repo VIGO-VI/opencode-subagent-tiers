@@ -72,7 +72,7 @@ function longest(from, seen = new Set()) {
 const graphDepth = 1 + Math.max(0, ...graph.keys().map((id) => longest(id)))
 // The runtime cap is a ceiling, not a target: permissions still decide which
 // agent may spawn which, so the effective chain can be shorter than this.
-const depth = Number(process.env.SUBAGENT_DEPTH ?? 5)
+const depth = Number(process.env.SUBAGENT_DEPTH ?? 3)
 console.log(
   `permission graph depth: ${graphDepth}; runtime ceiling subagent_depth: ${depth}` +
     (graphDepth > depth ? " (graph is deeper than the ceiling, raise SUBAGENT_DEPTH)" : ""),

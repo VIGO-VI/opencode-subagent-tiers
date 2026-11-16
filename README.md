@@ -68,18 +68,19 @@ model on top, and does not need a fork.
 ```
 
 It copies the agents into `~/.config/opencode/agents/`, sets
-`experimental.subagent_depth` to 5, and adds the plugin entry with the tier
+`experimental.subagent_depth` to 3, and adds the plugin entry with the tier
 options from `tiers.json` to `~/.config/opencode/opencode.json`. It preserves
 every other key. Re-run it after editing `tiers.json`.
 
 The runtime cap is a ceiling, not a target. The chain that actually happens is
 the permission graph: an agent can only spawn the agents its `subagent` rules
-allow. `install.sh` prints that graph's depth and sets the ceiling to 5, which
-is more than this layout needs. Override with `SUBAGENT_DEPTH=n ./install.sh`.
+allow. `install.sh` prints that graph's depth and sets the ceiling to 3, which
+is the whole chain this layout defines. Override with
+`SUBAGENT_DEPTH=n ./install.sh`.
 
-In practice one or two layers cover almost every session. Headroom costs
-nothing, because an agent only spawns when its prompt says to, and the cheap
-profiles refuse to spawn at all.
+Two subagent levels is the working maximum, and one is the common case. Past
+that the tiers are running on models too weak to judge the work below them, so
+a deeper chain adds cost without adding an answer.
 
 Then pick `swarm-lead` as the agent for a session, or let the main agent delegate
 to it.
@@ -259,8 +260,8 @@ fix, before the conductor ever saw it.
 - Budgets are estimates from character counts, charged per call. They are for
   keeping spend bounded, not for accounting.
 - `subagent_depth` is experimental. A future release can change its name. The
-  install sets it to 5 as a ceiling because that is more than enough for this
-  layout; the permission graph, not the number, decides the real chain.
+  install sets it to 3, the depth of the chain this layout defines, and the
+  permission graph usually stops sooner.
 - The tier ladder is per tier, not per agent instance. Two agents mapped to the
   same tier consult the same level above.
 

@@ -380,9 +380,10 @@ export default Plugin.define({
 
           const caller = await callerOf(context)
           const target = resolveTier((args.tier ?? "").trim().toLowerCase(), caller.tier)
+          const kind = (args.kind ?? "").trim().toLowerCase() || "general"
           const prompt = [
             SKIM_BRIEF,
-            `## Task given to the ${caller.tier ?? caller.agent} tier`,
+            `## Task given to the ${caller.tier ?? caller.agent} tier (kind: ${kind})`,
             task,
             "## Report it is handing back",
             report,
@@ -401,7 +402,7 @@ export default Plugin.define({
           let verdict: string
           let model: string
           try {
-            const answer = await ask(target, prompt, caller.base, (args.kind ?? "").trim().toLowerCase() || undefined)
+            const answer = await ask(target, prompt, caller.base, kind === "general" ? undefined : kind)
             verdict = answer.text
             model = answer.model
           } catch (error) {
