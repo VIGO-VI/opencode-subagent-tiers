@@ -7,7 +7,7 @@
  * experimental, so every registry is used behind a guard.
  */
 import { MenuItem, Panel, Plugin, type PanelTab, type Context } from "@opencode/plugin/gui"
-import { For, Show, createSignal, onMount } from "solid-js"
+import { For, Show, createEffect, createSignal, onCleanup } from "solid-js"
 
 const PANEL_ID = "subagents"
 
@@ -28,9 +28,8 @@ function List(props: { session: any; ctx: Context }) {
   const [rows, setRows] = createSignal<Child[]>([])
   const [error, setError] = createSignal<string | undefined>()
 
-  const load = async () => {
+  const load = async (session: any) => {
     try {
-      const session = props.session
       const result = await session.server.client.session.list({ directory: session.directory })
       const data: Child[] = result?.data ?? []
       setRows(data.filter((entry) => entry.parentID === session.id))
@@ -40,31 +39,45 @@ function List(props: { session: any; ctx: Context }) {
     }
   }
 
-  onMount(() => void load())
+  // Children appear and finish while the panel is open, so follow the session
+  // on screen and poll while mounted. No refresh button: there is nothing to
+  // press if the list keeps itself current.
+  createEffect(() => {
+    const session = props.session
+    void load(session)
+    const timer = setInterval(() => void load(session), 3000)
+    onCleanup(() => clearInterval(timer))
+  })
 
   return (
-    <div style={{ padding: "12px", display: "flex", "flex-direction": "column", gap: "6px" }}>
-      <button onClick={() => void load()} style={{ "align-self": "flex-start" }}>
-        refresh
-      </button>
-      <Show when={!error()} fallback={<p>{error()}</p>}>
-        <Show when={rows().length > 0} fallback={<p>No subagent sessions under this one.</p>}>
+    <div style={{ padding: "10px 12px", display: "flex", "flex-direction": "column", gap: "6px" }}>
+      <Show when={!error()} fallback={<p style={{ opacity: 0.7 }}>{error()}</p>}>
+        <Show
+          when={rows().length > 0}
+          fallback={
+            <p style={{ opacity: 0.7, margin: 0 }}>
+              No subagent sessions under this one. They appear here while they run.
+            </p>
+          }
+        >
           <For each={rows()}>
             {(child) => (
               <button
                 style={{
                   "text-align": "left",
                   padding: "6px 8px",
-                  border: "1px solid rgba(127,127,127,.3)",
+                  border: "1px solid rgba(127,127,127,.35)",
                   "border-radius": "6px",
+                  background: "transparent",
+                  cursor: "pointer",
                 }}
                 onClick={() =>
                   props.ctx.tabs.open({ server: props.session.server.id, id: child.id }, { focus: true })
                 }
               >
-                <strong>{child.agent ?? "subagent"}</strong> {when(child)}
+                <strong>{child.agent ?? "subagent"}</strong> <span style={{ opacity: 0.6 }}>{when(child)}</span>
                 <br />
-                <span style={{ opacity: 0.8 }}>{child.title ?? child.id}</span>
+                <span style={{ opacity: 0.85 }}>{child.title ?? child.id}</span>
               </button>
             )}
           </For>

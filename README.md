@@ -443,12 +443,14 @@ to whatever model the session is on.
 
 Desktop gets a **Subagents** tab for the session on screen, listing its child
 sessions, and a **Subagents** entry in the side panel's `+` menu. Clicking a row
-opens that child session as a tab. The CLI has `~/bin/oc-subs`, which prints the
+opens that child session as a tab. The list follows the session on screen and
+polls while the panel is open, so children appear and finish without a refresh
+control. The CLI has `~/bin/oc-subs`, which prints the
 same list with the command to open one.
 
 The GUI part is `gui.tsx`, built to `dist/gui-experimental.cjs` by `vite build`
 with OpenCode's GUI preset. It follows the shape of
-[`slkiser/opencode-quota`](https://github.com/slksiser/opencode-quota), a working
+[`slkiser/opencode-quota`](https://github.com/slkiser/opencode-quota), a working
 OpenCode Desktop panel, because the GUI plugin API is experimental and the docs
 alone are thin on a real panel.
 
