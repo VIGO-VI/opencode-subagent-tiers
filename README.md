@@ -13,15 +13,18 @@ every time it asks.
 
 OpenCode 2.x already lets each agent name its own model (`agents.<id>.model`),
 nest subagents one level deep by default (`experimental.subagent_depth`), and
-gate who may spawn whom (the `subagent` permission). What it does not have is a
-way for a running agent to consult a stronger model mid-turn, or a notion of
-cost tiers at all.
+gate who may spawn whom (the `subagent` permission). All three are documented at
+[opencode.ai/docs/agents](https://opencode.ai/docs/agents) and
+[opencode.ai/docs/config](https://opencode.ai/docs/config). What it does not
+have is a way for a running agent to consult a stronger model mid-turn, or a
+notion of cost tiers at all.
 
 That gap is tracked upstream:
 
 - [#63631](https://github.com/anomalyco/opencode/issues/63631), open, "Advisor
-  tool, let the session model consult a second model", modelled on Claude Code's
-  advisor.
+  tool, let the session model consult a second model". The issue says Claude
+  Code has an advisor of that shape; that claim is the issue author's, not
+  checked against Anthropic's docs here.
 - [#63637](https://github.com/anomalyco/opencode/pull/63637), open PR
   implementing it natively behind an `experimental.advisor` flag.
 - [#34370](https://github.com/anomalyco/opencode/issues/34370), closed,
@@ -49,11 +52,12 @@ model on top, and does not need a fork.
   research eval, and states that multi-agent systems use about 15x the tokens of
   chat, so the win has to come from parallel breadth and a small conductor
   context ([Anthropic, 2025](https://www.anthropic.com/engineering/multi-agent-research-system)).
-- **Cheap workers need a check.** A weaker model is wrong more often, so a
-  report is worth one skim by a stronger model before it is trusted. That is
-  what `handoff` automates, and it is the same shape as the reviewer half of
-  Mixture-of-Agents, where layered proposers are aggregated by a stronger model
-  ([Wang et al., 2024](https://arxiv.org/abs/2406.04692)).
+- **Layered reading helps.** Mixture-of-Agents stacks layers where each agent
+  reads every output of the previous layer, and its open-source ensemble led
+  AlpacaEval 2.0 at 65.1% against 57.5% for GPT-4 Omni
+  ([Wang et al., 2024](https://arxiv.org/abs/2406.04692)). `handoff` borrows the
+  layered shape at one agent per layer. The paper does not test a cheaper
+  checker, so the skim's value here is a design choice, not a result.
 - **Tiers and fallbacks are the industry shape.** OpenRouter's Auto Router
   picks a model and reasoning effort per request within a cost tier, carries
   signals across turns, and lets a request list fallback models in priority
@@ -181,6 +185,12 @@ writes wildcarded family scores. Rate limit is 30 requests a minute, 500 a day.
 
 ## How much of this is evidence, and how much is judgement
 
+The rule this README follows: a number is either measured here with the command
+that produced it, arithmetic from numbers stated here with the formula, or
+cited with a link. Anything else is written as a judgement. The plugin's own
+token figures are labelled as its estimate, because it counts characters, not
+provider usage.
+
 Measured in public work, and safe to rely on:
 
 - Cascading cheap to expensive pays when you can tell a good answer from a bad
@@ -224,9 +234,17 @@ Blended price is input + output per million tokens, from the live model list on
 | `opencode-go/deepseek-v4-pro` | 2.64 | advisor |
 | `opencode-go/qwen4-max` | 6 | advisor |
 
-One lookup consult on the free worker cost 223 tokens. One code consult on the
-advisor cost 449 tokens against its 30k allowance. The same question on the
-free tier would be $0, on the lead $0.0005, on the advisor about $0.002.
+The tool reports what it charged, and that number is the plugin's own estimate
+of `(prompt + reply characters) / 4`, not the provider's token count. From
+`run5.out`, a lookup on the free worker charged 223 estimated tokens, a code
+consult on the advisor charged 449 of its 30k allowance, and a lookup on the
+advisor charged 219.
+
+Arithmetic from those charges and the price column, with no other assumption:
+cost is between `tokens * input / 1e6` and `tokens * output / 1e6`, so 223
+tokens on the free model is $0, and 449 tokens on `qwen4-max` is between
+$0.0007 and $0.002 depending on how the input/output split fell. The plugin does
+not record that split, so a single exact figure would be invented.
 
 ## Verification
 
@@ -283,10 +301,11 @@ fix, before the conductor ever saw it.
 
 ## Limits
 
-- OpenCode resolves an agent's model before any hook, so each agent file still
-  names a model. The plugin cannot change what a subagent *runs on* without the
-  experimental `experimental.model.resolve` session hook, which is the natural
-  next step.
+- Each agent file still names a model, and that is what OpenCode runs. The
+  experimental `experimental.model.resolve` hook can swap the model for a single
+  request, but only within the same provider
+  ([docs](https://opencode.ai/docs/build/plugins/server)), so it cannot move a
+  Claude agent onto a DeepSeek tier. This plugin does not register that hook.
 - The skim is one short prompt with no tools. It catches a report that
   contradicts its own evidence, not a subtly wrong claim that reads well.
 - Reports travel as text through each level, which is the pattern Anthropic
