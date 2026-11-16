@@ -165,6 +165,9 @@ session's messages, so a long session earns more room. Worker sessions are
 excluded from that sum, which makes the ceiling stricter than it looks, never
 looser.
 
+Both sets of numbers live in `tiers.json` under `budget` and `skim`, and
+`install.sh` copies them into the plugin entry in `opencode.json`.
+
 The share is soft and the hard cap is not. A caller that states a `reason` can
 cross the share up to the cap, and the call is marked `bypassed` in its
 metadata. After a `handoff`, the skim ends with a `NEXT:` line, so a follow-up
