@@ -1,0 +1,27 @@
+{
+  "name": "opencode-subagent-tiers",
+  "version": "0.1.0",
+  "description": "Cost tiers and a blank-slate consult tool for OpenCode subagents",
+  "type": "module",
+  "license": "MIT",
+  "exports": {
+    ".": "./plugin/index.ts"
+  },
+  "files": [
+    "plugin",
+    "agents",
+    "README.md"
+  ],
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "format": "prettier --write plugin/index.ts"
+  },
+  "devDependencies": {
+    "@opencode/client": "2.3.0",
+    "@opencode/plugin": "2.3.0",
+    "@opencode/schema": "2.3.0",
+    "@types/node": "^24.0.0",
+    "effect": "4.1.0",
+    "typescript": "^5.9.0"
+  }
+}

@@ -1,0 +1,27 @@
+{
+  "_note": "Coarse 0-100 prior, keyed by wildcard over the model id. These are starting values to be replaced by scripts/rank.mjs output (OpenRouter's unified benchmarks, which aggregate Artificial Analysis, Design Arena and OpenRouter's own evals). They are a prior, not a measurement: the selector only needs a stable order inside a price band, and the newest release of a matched family wins a tie.",
+  "_updated": "2026-11-16",
+  "rank": {
+    "*claude-fable*": 90,
+    "*gemini-4-argon*": 88,
+    "*qwen4-max*": 86,
+    "*gpt-6.1-terra-pro*": 85,
+    "*deepseek-v4-pro*": 84,
+    "*gpt-6.1-terra*": 83,
+    "*qwen3.8-max*": 82,
+    "*kimi-k3.1-pro*": 81,
+    "*grok-4.7*": 80,
+    "*glm-5.3": 78,
+    "*deepseek-v4.1-flash*": 72,
+    "*gpt-6-luna*": 71,
+    "*claude-haiku*": 70,
+    "*kimi-k2.7-code*": 68,
+    "*step-5*": 66,
+    "*glm-5.3-flash*": 64,
+    "*minimax-m3.1-flash*": 60,
+    "*hy4-flash*": 55,
+    "*mimo-v2.6-flash*": 52,
+    "*muse-spark*": 50,
+    "*muse-ember*": 50
+  }
+}
