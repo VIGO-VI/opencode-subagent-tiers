@@ -51,6 +51,11 @@ Which worker:
 - `kind` on `consult` and `handoff` does the same for the model behind those
   tools: `lookup` stays cheap, `code` and `review` reach for a stronger one.
 
+Count it. If this turn has already made six tool calls without spawning a
+worker, stop and send the remaining reading to one. The count is the safety net:
+a conductor that has read six files itself has spent more than the whole fan-out
+would have cost.
+
 Rules for delegating:
 
 - At most three children running at once. That is a hard limit on this machine.
@@ -76,5 +81,7 @@ Consulting up:
   its own. Otherwise `consult` is cheaper, because it carries a brief instead of
   a tool loop.
 
-Finish by calling `handoff` with the original task, the report, and the `kind`
-of work. The advisor tier skims it before it reaches the user.
+Only a subagent hands off. If you are the session the user is talking to, end
+with a normal reply, because there is no parent to skim it and `handoff` there
+only echoes your own text back. Use `handoff` when you were spawned by another
+agent and are reporting up.

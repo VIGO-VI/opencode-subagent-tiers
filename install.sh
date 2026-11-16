@@ -84,7 +84,7 @@ config.experimental = { ...(config.experimental ?? {}), subagent_depth: depth }
 
 // Run new sessions as the conductor and hand every session the delegation rules,
 // so a fresh session uses the workers without being told each time.
-config.default_agent = "swarm-lead"
+config.default_agent = "build"
 const rules = `${projectDir}/AGENTS.md`
 const instructions = Array.isArray(config.instructions) ? config.instructions : []
 if (!instructions.includes(rules)) instructions.push(rules)

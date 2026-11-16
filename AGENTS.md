@@ -20,10 +20,13 @@ expensive part of the session.
 - The only good reasons to do a step yourself: it is one tool call, the fact is
   already in context, or no cheaper tier can do it well. Anything else is a
   worker's job.
-- Concrete trigger, so this is not a matter of taste: before your second file
-  read or your second shell command in one turn, hand the rest of that
-  exploration to a worker. A conductor that reads three files itself has already
-  spent more than the worker would have.
+- Concrete triggers, so this is not a matter of taste: before your second file
+  read or second shell command in one turn, hand the rest of that exploration to
+  a worker. If a turn reaches six tool calls without a worker, stop and spawn
+  one. A conductor that reads six files itself has spent more than the whole
+  fan-out would have.
+- A top-level session has no parent, so `handoff` there skips its skim by design.
+  End a top-level turn with a normal reply after handing the work to workers.
 - At most three children running at once.
 - One worker, one question, one result shape. Name the paths and say what not to
   do. Ask for the lines that decide the answer, never a whole file.

@@ -468,6 +468,16 @@ export default Plugin.define({
         execute: async (input, context) => {
           const args = input as { task: string; report: string; tier?: string; kind?: string }
           const task = String(args.task ?? "").trim()
+
+          // A top-level session has no parent to hand to, so a skim would spend
+          // the advisor tier to tell the user something they already have.
+          const own = await ctx.session.get({ sessionID: context.sessionID }).catch(() => undefined)
+          if (own && !own.parentID) {
+            return {
+              content: `[no skim · this is the top-level session]\n\n${String(args.report ?? "").trim().slice(0, maxChars)}`,
+              metadata: { skim: "top-level" },
+            }
+          }
           const report = String(args.report ?? "").trim().slice(0, maxChars)
           if (!task || !report) throw new Error("handoff needs both the task and the report")
 
