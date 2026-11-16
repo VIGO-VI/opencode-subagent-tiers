@@ -439,6 +439,25 @@ median catalog price. That is also why the `2.50x` lines in the earlier snippet
 differ from the `8.00x` seen when the base was a paid model: the band is relative
 to whatever model the session is on.
 
+## Seeing subagent sessions
+
+Desktop gets a **Subagents** tab for the session on screen, listing its child
+sessions, and a **Subagents** entry in the side panel's `+` menu. Clicking a row
+opens that child session as a tab. The CLI has `~/bin/oc-subs`, which prints the
+same list with the command to open one.
+
+The GUI part is `gui.tsx`, built to `dist/gui-experimental.cjs` by `vite build`
+with OpenCode's GUI preset. It follows the shape of
+[`slkiser/opencode-quota`](https://github.com/slksiser/opencode-quota), a working
+OpenCode Desktop panel, because the GUI plugin API is experimental and the docs
+alone are thin on a real panel.
+
+Two facts about loading it, both observed on 2026-11-16: the bundle builds, and
+the running app still reports `features: {"server": true}` for this plugin after
+`opencode reload`. GUI parts are resolved when the desktop app boots, so quit and
+reopen the app once after building. Settings > Extensions > Plugins then lists
+the switch for it.
+
 ## Limits
 
 - Each agent file still names a model, and that is what OpenCode runs. The
