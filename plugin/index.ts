@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs"
 import { Plugin } from "@opencode/plugin"
 
 import {
+  applyPricing,
   budgetFor,
   blendedPrice,
   modelKey,
@@ -9,6 +10,7 @@ import {
   resolveCandidates,
   type BudgetSpec,
   type Candidate,
+  type PricingTable,
   type Resolved,
   type TierSpec,
 } from "./select.ts"
@@ -62,6 +64,12 @@ type Options = {
   kinds?: string[]
   /** Agent id to tier, for agents whose tier cannot be read from a model list. */
   agents?: Record<string, string>
+  /**
+   * What a model actually costs this machine, when that differs from the list
+   * price: a subscription, a BYOK key, or a free tier. Wildcards, `"free"` for
+   * zero, most specific pattern wins.
+   */
+  pricing?: PricingTable
 }
 
 const DEFAULT_BRIEF = `You are a senior engineer brought in for a second opinion.
@@ -227,7 +235,7 @@ export default Plugin.define({
           ref: { providerID: model.providerID, id: model.id },
           id: model.id,
           providerID: model.providerID,
-          price: blendedPrice(model.cost),
+          price: applyPricing(blendedPrice(model.cost), options.pricing, modelKey(model), model.id),
           released: Number(model.time?.released ?? 0),
         })
       }

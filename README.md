@@ -240,6 +240,24 @@ catalog, and it gets a turn in the free rotation by being added to
 `providerOrder`. `allow` and `deny` patterns can scope a tier to particular
 providers or model families.
 
+### When list price is not your price
+
+The catalog price is the published rate. What a model costs this machine can be
+different: a subscription includes its models, a BYOK key can be cheaper than
+the list, and some plans cover a provider outright. `pricing` in `tiers.json`
+declares that difference, and the selector uses the declared number everywhere,
+including the free group:
+
+```json
+"pricing": { "anthropic/*": "free", "console-openrouter/*:free": "free" }
+```
+
+Patterns are wildcards over `provider/model`, the most specific match wins, and
+`"free"` means zero. That is how adding a connection feeds the free rotation: the
+models appear in the catalog, and one line here declares them free for you. The
+plugin cannot read your contract or your plan, so this part is declared, not
+inferred.
+
 ### Ranking data
 
 `rankings.json` holds a coarse 0-100 prior per family. It is a prior, not a

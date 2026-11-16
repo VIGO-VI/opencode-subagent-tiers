@@ -2,6 +2,7 @@ import assert from "node:assert/strict"
 import { test } from "node:test"
 
 import {
+  applyPricing,
   budgetFor,
   blendedPrice,
   matches,
@@ -261,6 +262,13 @@ test("a justification lifts the share but never the hard cap", () => {
   assert.equal(tooShort.allowed, false)
   const overCap = budgetFor({ ...spec, hardCap: 1_000 }, 100_000, 900, 500, "a long enough justification here")
   assert.equal(overCap.allowed, false)
+})
+
+test("a declared price replaces the catalog price, most specific first", () => {
+  assert.equal(applyPricing(0.75, undefined, "opencode-go/x"), 0.75)
+  assert.equal(applyPricing(0.75, { "anthropic/*": "free" }, "anthropic/x"), 0)
+  assert.equal(applyPricing(0.75, { "*": 0.01, "opencode-go/*": 0.2 }, "opencode-go/x"), 0.2)
+  assert.equal(applyPricing(0.75, { "opencode-go/*": 0.2, "*": 0.01 }, "other/x"), 0.01)
 })
 
 test("a tier with no share and no cap is unbounded", () => {

@@ -296,3 +296,27 @@ export function budgetFor(
   }
   return { allowed: false, limit, bound, bypassed: false }
 }
+
+export type PricingTable = Record<string, number | "free">
+
+/**
+ * Replace a catalog price with what the model actually costs this machine, for
+ * a subscription, a BYOK key, or a free tier that the list price does not show.
+ * The most specific matching pattern wins; no match leaves the catalog price.
+ */
+export function applyPricing(
+  price: number,
+  table: PricingTable | undefined,
+  ...values: string[]
+): number {
+  if (!table) return price
+  let best: { value: number; length: number } | undefined
+  for (const [pattern, value] of Object.entries(table)) {
+    if (!matchesAny([pattern], ...values)) continue
+    const length = pattern.replace(/[*?]/g, "").length
+    if (!best || length > best.length) {
+      best = { value: value === "free" ? 0 : value, length }
+    }
+  }
+  return best ? best.value : price
+}
