@@ -3,6 +3,10 @@
 This repository installs a cheap delegation stack for OpenCode. When the
 `tier-router` plugin is active, follow these rules.
 
+**Your first action on a task larger than a single question is to spawn a worker
+for the reading.** Plan the split before you open a file, not after the sixth
+one. Everything below explains how.
+
 ## Delegation
 
 Delegation is the default, not a treat. If a step can be handed to a worker, hand
