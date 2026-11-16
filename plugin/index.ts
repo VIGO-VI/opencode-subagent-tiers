@@ -67,6 +67,12 @@ type Options = {
   /** How long one consultant call may take before it is abandoned. */
   timeoutMs?: number
   /**
+   * Append one reminder line to the system prompt of a session that has not
+   * spawned anything yet. `true` or unset uses the default budget, a number sets
+   * how many requests get the line, `false` disables it.
+   */
+  nudge?: boolean | number
+  /**
    * Where a handoff report is delivered. `parent` posts it into the parent
    * session through the session API, so delivery cannot be lost or paraphrased
    * by the child. `child` only returns it as the tool result, the old behaviour.
@@ -654,6 +660,69 @@ export default Plugin.define({
         },
       })
     })
+
+    // Per-request reminder. Instructions are read once and compete with the
+    // model's own plan; a line in the system prompt arrives at the moment the
+    // decision is made. It stops as soon as the session spawns a child, so a
+    // session that delegates pays for it at most once.
+    // Nudge only agents that are actually allowed to spawn, read from their
+    // permissions rather than a list of names, so a renamed or user-defined
+    // conductor is covered and a worker is not pestered to delegate.
+    const spawnable = new Set<string>()
+    try {
+      const { data: agents } = await ctx.agent.list()
+      for (const agent of agents) {
+        const rules = agent.permissions ?? []
+        // Either a specific subagent allow list, or the blanket `*: *: allow`
+        // that a built-in agent like build carries.
+        const can =
+          rules.some((rule) => rule.action === "subagent" && rule.effect === "allow") ||
+          rules.some((rule) => rule.action === "*" && rule.resource === "*" && rule.effect === "allow")
+        if (can) spawnable.add(agent.id)
+      }
+    } catch {
+      for (const id of Object.keys(agentTiers)) {
+        if (agentTiers[id] !== "worker") spawnable.add(id)
+      }
+    }
+    const spawned = new Set<string>()
+    const nudges = new Map<string, number>()
+    const nudgeBudget = options.nudge === false ? 0 : typeof options.nudge === "number" ? options.nudge : 8
+
+    if (nudgeBudget > 0) {
+      try {
+        await ctx.tool.hook("execute.after", (event) => {
+          if (event.tool === "subagent") spawned.add(String(event.sessionID))
+        })
+      } catch (error) {
+        console.warn(`tier-router: tool hook unavailable, no nudge: ${(error as Error)?.message ?? error}`)
+      }
+
+      try {
+        await ctx.session.hook("context", (event) => {
+          try {
+            const session = String(event.sessionID)
+            if (spawned.has(session)) return
+            const agent = String(event.agent)
+            if (!spawnable.has(agent)) return
+            const used = nudges.get(session) ?? 0
+            if (used >= nudgeBudget) return
+            nudges.set(session, used + 1)
+            event.system.push({
+              type: "text",
+              text:
+                "Delegation reminder: if this task needs more than one file read or shell call, " +
+                "spawn a swarm-worker for that reading now, before you start it. Workers run on a free model.",
+            })
+            console.warn(`tier-router: nudge ${used + 1}/${nudgeBudget} for ${agent}`)
+          } catch {
+            // A reminder must never break a request.
+          }
+        })
+      } catch (error) {
+        console.warn(`tier-router: session hook unavailable, no nudge: ${(error as Error)?.message ?? error}`)
+      }
+    }
 
     console.info(
       `tier-router: consult and handoff ready, tiers ${order.join(" < ")}` +

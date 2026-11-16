@@ -95,6 +95,17 @@ install is made rather than hand-edited:
 OPENCODE_CONFIG_DIR=~/.local/share/vigo-agent/.config/opencode ./install.sh
 ```
 
+A per-request reminder covers the case instructions miss. A `context` hook appends
+one sentence to the system prompt of a session that has not spawned anything yet,
+and only for agents whose permissions allow spawning, which is read from the
+permission rules rather than a list of names. It stops after the first spawn or
+eight requests, whichever comes first, and `nudge: false` turns it off.
+
+It is cache-safe by construction: the sentence is identical every time, so it
+extends the request tail instead of rewriting the prefix, and the prompt cache
+still matches everything before it. The tail changes once, when the reminder
+stops, which is one cache miss rather than one per request.
+
 What makes an agent actually delegate, in order of strength:
 
 1. `default_agent: "swarm-lead"`, set by `install.sh`, so a new session starts as
