@@ -179,6 +179,38 @@ It reads OpenRouter's unified benchmarks, which aggregate Artificial Analysis,
 Design Arena and OpenRouter's own GPQA, tau-bench and web-search evaluations, and
 writes wildcarded family scores. Rate limit is 30 requests a minute, 500 a day.
 
+## How much of this is evidence, and how much is judgement
+
+Measured in public work, and safe to rely on:
+
+- Cascading cheap to expensive pays when you can tell a good answer from a bad
+  one. FrugalGPT and RouteLLM both measure it.
+- Routing between a strong and a weak model can cut cost by more than 2x with no
+  quality loss, and the router survives a change of models.
+- Multi-agent beats single-agent on breadth-first research, and it does so by
+  spending more tokens, not fewer. Anthropic measured 90.2% better on their
+  research eval and about 15x the tokens of chat, with token usage alone
+  explaining 80% of the variance.
+
+Judgement, not measured here:
+
+- That a cheap tier plus a skim matches a strong model on *cost at equal
+  quality*. Nobody has run that eval on this setup. The citations support the
+  direction, not this number.
+- That delegation helps for code work. Anthropic's own post warns the opposite
+  is often true: most coding tasks have fewer truly parallelisable subtasks, and
+  agents are not yet good at delegating in real time. Our answer is to delegate
+  bulk reading, keep judgement with the conductor, and skim every hand-back. It
+  is a design bet.
+- That three levels help. The same post runs one layer of subagents. Our ceiling
+  is three because the permission graph allows it, and two is the realistic
+  maximum before the tiers are too weak to judge the work below them.
+
+If you want the claim to be more than a design bet, run the same task with and
+without the chain on your own repository and compare cost and accepted diffs.
+The resolver log and the token counters in each tool result are there to make
+that measurable.
+
 ## Cost, measured on this machine's catalog
 
 Blended price is input + output per million tokens, from the live model list on

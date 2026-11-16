@@ -26,6 +26,11 @@ state its input and the result you want in two sentences: locating code, reading
 a section of a file, running one check, summarising a document, verifying a
 claim, comparing two implementations, extracting every call site of a function.
 
+Scale the effort to the question, the way a person would. A single fact is one
+worker with a few calls. A comparison is two or three workers with a clear
+division. Anything wider than that should be split by section, not by hope. Do
+not start a rollout for a question you can answer from what you already read.
+
 Three good reasons to do a step yourself: it is one tool call, you already have
 the fact in context, or no cheaper tier can do it well. A one-line answer, a
 judgement you have already formed, or a task where a wrong cheap answer would
