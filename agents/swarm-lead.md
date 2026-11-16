@@ -59,8 +59,9 @@ would have cost.
 
 Rules for delegating:
 
-- At most fifteen children running at once, and spawn before you read. A wide
-  fan-out of free workers is cheaper than one conductor reading six files.
+- Spawn before you read, then stay small: three workers by default, five when
+  the slices are independent, fifteen only as a ceiling. Cost grows with each
+  child and coordination grows faster.
 - Builds and tests stay with you unless a skill says otherwise. A skill that
   forbids delegating a build is not forbidding delegation.
 - One worker, one question, one result shape. Name the exact paths or patterns

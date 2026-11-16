@@ -504,6 +504,23 @@ median catalog price. That is also why the `2.50x` lines in the earlier snippet
 differ from the `8.00x` seen when the base was a paid model: the band is relative
 to whatever model the session is on.
 
+## How wide to fan out
+
+Not as wide as possible. Anthropic, the only vendor publishing measurements for
+this, says start with 3-5 teammates for most workflows, that 15 independent
+tasks is well served by 3 teammates, and that "three focused teammates often
+outperform five scattered ones". Their multi-agent post scales effort to the
+question: one agent for simple fact-finding, 2-4 subagents for a comparison, and
+more than ten only for genuinely wide research.
+
+Their token evidence points the same way. Multi-agent runs use about 15x the
+tokens of chat, token usage alone explains 80% of the performance variance, and
+the cost of adding a child is linear while the coordination cost is not.
+
+So the shipped policy is three by default, five when the slices are genuinely
+independent, and fifteen as a ceiling for a wide sweep whose parts really are
+separate. That ceiling exists to stop a runaway, not to invite one.
+
 ## Seeing subagent sessions
 
 Desktop gets a **Subagents** tab for the session on screen, listing its child
