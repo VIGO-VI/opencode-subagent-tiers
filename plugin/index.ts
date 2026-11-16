@@ -46,6 +46,8 @@ type Options = {
   skim?: { tokens?: number; perTier?: Record<string, number | undefined> }
   /** Task kinds advertised to the tools. Each tier can override its policy per kind. */
   kinds?: string[]
+  /** Agent id to tier, for agents whose tier cannot be read from a model list. */
+  agents?: Record<string, string>
 }
 
 const DEFAULT_BRIEF = `You are a senior engineer brought in for a second opinion.
@@ -101,6 +103,7 @@ export default Plugin.define({
     const skim = options.skim ?? {}
     const rankings = loadRankings()
     const kinds = options.kinds ?? ["general", "code", "code-go", "lookup", "review", "write"]
+    const agentTiers = options.agents ?? {}
 
     if (order.length === 0) {
       console.warn("tier-router: no tiers configured, tools disabled")
@@ -247,8 +250,10 @@ export default Plugin.define({
         root === context.sessionID ? session : await ctx.session.get({ sessionID: root }).catch(() => undefined)
       // The base model is the user's own choice for the tree, so it sets the ratio.
       const base = rootInfo?.model ?? session?.model ?? agent?.model ?? undefined
-      const tier = tierOf(agent?.model ?? undefined)
-      return { agent: agent?.id ?? context.agent, tier, base: base ? modelKey(base) : undefined }
+      const id = agent?.id ?? context.agent
+      const declared = agentTiers[id]
+      const tier = declared && tiers[declared] ? declared : tierOf(agent?.model ?? undefined)
+      return { agent: id, tier, base: base ? modelKey(base) : undefined }
     }
 
     const shared = `Tiers, low to high: ${order.join(", ")}. Budgets are tokens, shared by the whole session tree, so a worker and its conductor draw from the same allowance.`

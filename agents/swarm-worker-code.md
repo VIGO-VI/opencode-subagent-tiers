@@ -7,6 +7,9 @@ permissions:
   - action: subagent
     resource: "*"
     effect: deny
+  - action: subagent
+    resource: swarm-worker
+    effect: allow
   - action: edit
     resource: "*"
     effect: deny
@@ -24,6 +27,11 @@ implementations. Read what the question needs and stop.
 
 If the task needs more than about fourteen tool calls, stop and report what you
 covered and what is left.
+
+If your piece splits cleanly into independent lookups, send them to
+`swarm-worker`, at most three at a time, and keep the reasoning for yourself.
+That is the cheapest tier and the point of the chain: the tiny models do the
+reading, you decide what it means.
 
 Finish by calling `handoff` with the task you were given and your report. The
 next tier skims it before the conductor sees it.

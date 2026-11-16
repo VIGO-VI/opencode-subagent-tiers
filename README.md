@@ -68,7 +68,7 @@ model on top, and does not need a fork.
 ```
 
 It copies the agents into `~/.config/opencode/agents/`, sets
-`experimental.subagent_depth` to 2, and adds the plugin entry with the tier
+`experimental.subagent_depth` to 3, and adds the plugin entry with the tier
 options from `tiers.json` to `~/.config/opencode/opencode.json`. It preserves
 every other key. Re-run it after editing `tiers.json`.
 
@@ -80,12 +80,18 @@ to it.
 | Agent | Model | Use |
 | --- | --- | --- |
 | `swarm-worker` | free flash | lookups, extraction, counting, cheap checks |
-| `swarm-worker-code` | cheap flash | tracing code, judging a diff, why a test fails |
+| `swarm-worker-code` | cheap flash | tracing code, judging a diff, why a test fails; may split its own work to `swarm-worker` |
 | `swarm-lead` | cheap flash | splits work, holds at most three children, hands back with a skim |
 | `advisor` | strong model | reads files itself, one decision, never edits |
 
-`subagent_depth: 2` is what lets a lead spawn workers. With the default of 1 a
-subagent cannot start another one, so the lead could not delegate.
+The chain is three deep: the session agent hands a piece to `swarm-lead`, the
+lead hands lookups to `swarm-worker-code` or `swarm-worker`, and
+`swarm-worker-code` may hand its own independent lookups to `swarm-worker`. Work
+comes back up one level at a time, and each level skims the report below it, so
+a cheap mistake is caught before it reaches the model the user is talking to.
+
+`subagent_depth: 3` is what allows this. With the default of 1 a subagent cannot
+start another one, so the chain would stop at the first level.
 
 ## Tools
 
@@ -211,8 +217,24 @@ $ tail -3 /tmp/tier-test/run5.out
 
 The three runs show the three behaviours: free first for a lookup, the ranked
 strong model for code, and a cheap model for a lookup even at the advisor tier.
-A separate run with `swarm-lead` showed a worker's `handoff` being skimmed and
-the lead acting on the `PROBLEM` verdict.
+
+A worker handing a report up, with the skim catching a real defect:
+
+```
+$ grep "tier-router:" /tmp/tier-test/run9.err
+tier-router: lead/code for base opencode-go/hy4-flash-free ->
+  opencode-go/qwen4-max 2.50x rank 86 |
+  console-openrouter/qwen/qwen4-max 2.50x rank 86 |
+  console-openrouter/openai/gpt-6.1-terra-pro 2.50x rank 85
+
+$ tail -2 /tmp/tier-test/run9.out
+PROBLEM: The report asserts specific line numbers without quoting any of the
+file's actual content ... Quote line 26 of src/queue.go verbatim ... and drop
+the line-32 unlock claim unless you also cite that line.
+```
+
+The free worker's report was rejected by the model one tier up, which quoted the
+fix, before the conductor ever saw it.
 
 ## Limits
 
@@ -224,7 +246,9 @@ the lead acting on the `PROBLEM` verdict.
   contradicts its own evidence, not a subtly wrong claim that reads well.
 - Budgets are estimates from character counts, charged per call. They are for
   keeping spend bounded, not for accounting.
-- `subagent_depth: 2` is experimental. A future release can change its name.
+- `subagent_depth` is experimental. A future release can change its name.
+- The tier ladder is per tier, not per agent instance. Two agents mapped to the
+  same tier consult the same level above.
 
 ## Licence
 

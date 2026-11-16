@@ -25,7 +25,7 @@ if (fs.existsSync(configPath)) {
 
 const options = JSON.parse(fs.readFileSync(`${pluginDir}/tiers.json`, "utf8"))
 
-config.experimental = { ...(config.experimental ?? {}), subagent_depth: 2 }
+config.experimental = { ...(config.experimental ?? {}), subagent_depth: 3 }
 
 const plugins = Array.isArray(config.plugins) ? config.plugins : []
 const entry = { package: pluginDir, options }

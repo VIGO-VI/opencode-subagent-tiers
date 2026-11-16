@@ -1,22 +1,66 @@
 {
-  "order": ["worker", "lead", "advisor"],
+  "order": [
+    "worker",
+    "lead",
+    "advisor"
+  ],
   "fallback": "advisor",
-  "kinds": ["general", "code", "code-go", "lookup", "review", "write"],
+  "kinds": [
+    "general",
+    "code",
+    "code-go",
+    "lookup",
+    "review",
+    "write"
+  ],
   "tiers": {
     "worker": {
       "label": "worker",
       "pick": {
-        "ratio": [0, 0.6],
+        "ratio": [
+          0,
+          0.6
+        ],
         "prefer": "cost",
         "limit": 4,
         "freeSlots": 2,
-        "providerOrder": ["opencode-go", "console-openrouter"],
-        "deny": ["*embed*", "*audio*", "*tts*"],
+        "providerOrder": [
+          "opencode-go",
+          "console-openrouter"
+        ],
+        "deny": [
+          "*embed*",
+          "*audio*",
+          "*tts*"
+        ],
         "byKind": {
-          "code": { "ratio": [0.4, 1.4], "prefer": "quality", "freeSlots": 0 },
-          "code-go": { "ratio": [0.4, 1.4], "prefer": "quality", "freeSlots": 0 },
-          "review": { "ratio": [0.4, 1.5], "prefer": "quality", "freeSlots": 0 },
-          "lookup": { "prefer": "cost" }
+          "code": {
+            "ratio": [
+              0.4,
+              1.4
+            ],
+            "prefer": "quality",
+            "freeSlots": 0
+          },
+          "code-go": {
+            "ratio": [
+              0.4,
+              1.4
+            ],
+            "prefer": "quality",
+            "freeSlots": 0
+          },
+          "review": {
+            "ratio": [
+              0.4,
+              1.5
+            ],
+            "prefer": "quality",
+            "freeSlots": 0
+          },
+          "lookup": {
+            "prefer": "cost"
+          }
         }
       },
       "brief": "You are the cheapest tier and you exist to save the caller money. Decide from the brief alone. If it is thin, name the one fact that is missing instead of guessing, and keep the answer short."
@@ -24,13 +68,32 @@
     "lead": {
       "label": "lead",
       "pick": {
-        "ratio": [0.5, 1.4],
+        "ratio": [
+          0.5,
+          1.4
+        ],
         "prefer": "quality",
         "limit": 3,
         "byKind": {
-          "lookup": { "prefer": "cost", "ratio": [0.3, 1.5] },
-          "code": { "ratio": [0.6, 2.5] },
-          "code-go": { "ratio": [0.6, 2.5] }
+          "lookup": {
+            "prefer": "cost",
+            "ratio": [
+              0.3,
+              1.5
+            ]
+          },
+          "code": {
+            "ratio": [
+              0.6,
+              2.5
+            ]
+          },
+          "code-go": {
+            "ratio": [
+              0.6,
+              2.5
+            ]
+          }
         }
       },
       "brief": "You are the working tier: a capable cheap model with no tools and no history. The caller is another cheap model, so be concrete and name the step it should take next."
@@ -38,14 +101,38 @@
     "advisor": {
       "label": "advisor",
       "pick": {
-        "ratio": [1.6, 12],
+        "ratio": [
+          1.6,
+          12
+        ],
         "prefer": "quality",
         "limit": 3,
-        "deny": ["*router*", "*pareto*"],
+        "deny": [
+          "*router*",
+          "*pareto*"
+        ],
         "byKind": {
-          "lookup": { "ratio": [0.6, 4], "prefer": "cost" },
-          "code": { "ratio": [1.6, 12], "prefer": "quality" },
-          "code-go": { "ratio": [1.6, 12], "prefer": "quality" }
+          "lookup": {
+            "ratio": [
+              0.6,
+              4
+            ],
+            "prefer": "cost"
+          },
+          "code": {
+            "ratio": [
+              1.6,
+              12
+            ],
+            "prefer": "quality"
+          },
+          "code-go": {
+            "ratio": [
+              1.6,
+              12
+            ],
+            "prefer": "quality"
+          }
         }
       },
       "brief": "You are the most expensive tier in this session, called because the decision matters more than the tokens. You see one brief and no history. Judge the decision, not the writing. If the brief lacks the deciding fact, say so in one line."
@@ -65,5 +152,12 @@
       "lead": 8000,
       "advisor": 6000
     }
+  },
+  "agents": {
+    "swarm-worker": "worker",
+    "swarm-worker-code": "lead",
+    "swarm-lead": "lead",
+    "advisor": "advisor",
+    "explore": "worker"
   }
 }
