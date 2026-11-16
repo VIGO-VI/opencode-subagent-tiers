@@ -687,6 +687,7 @@ export default Plugin.define({
     }
     const spawned = new Set<string>()
     const nudges = new Map<string, number>()
+    const requests = new Map<string, number>()
     const nudgeBudget = options.nudge === false ? 0 : typeof options.nudge === "number" ? options.nudge : 8
 
     if (nudgeBudget > 0) {
@@ -707,6 +708,11 @@ export default Plugin.define({
             if (!spawnable.has(agent)) return
             const used = nudges.get(session) ?? 0
             if (used >= nudgeBudget) return
+            // Start on the second request, the way the vendor's own nudge waits
+            // for the executor to orient before reminding it.
+            const seen = (requests.get(session) ?? 0) + 1
+            requests.set(session, seen)
+            if (seen < 2) return
             nudges.set(session, used + 1)
             event.system.push({
               type: "text",
