@@ -141,7 +141,7 @@ first. A `PROBLEM` verdict comes back to the worker so it can fix the report
 before the conductor sees it.
 
 A skimmer that stops answering cannot hold a worker's turn open: every consultant
-call has a deadline, 45 seconds for a consult and 25 for a skim, and a report
+call has a deadline, 60 seconds for a consult and 40 for a skim, and a report
 whose skim times out comes back unskimmed with a note. The skim also receives at
 most 3000 characters of a report, head and tail, because a skimmer that reads a
 whole long report costs more than the report was worth.

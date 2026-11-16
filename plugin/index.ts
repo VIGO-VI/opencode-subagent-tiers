@@ -134,7 +134,7 @@ export default Plugin.define({
     const skim = options.skim ?? {}
     const rankings = loadRankings()
     const kinds = options.kinds ?? ["general", "code", "code-go", "lookup", "review", "write"]
-    const timeoutMs = options.timeoutMs ?? 45_000
+    const timeoutMs = options.timeoutMs ?? 60_000
 
     /** A provider that stops answering must not hold a tool call open forever. */
     function withTimeout<T>(work: Promise<T>, ms: number, label: string): Promise<T> {
@@ -563,7 +563,7 @@ export default Plugin.define({
               prompt,
               caller.base,
               kind === "general" ? undefined : kind,
-              Math.min(timeoutMs, 25_000),
+              Math.min(timeoutMs, 40_000),
             )
             verdict = answer.text
             model = answer.model
