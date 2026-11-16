@@ -99,19 +99,24 @@ PROBLEM: one sentence naming the defect, then one concrete correction.
 End with a line starting "NEXT: " giving the single next action, so the caller can
 continue from that line alone without re-reading the report.`
 
-function loadRankings() {
+type Rankings = { rank: Record<string, number>; byKind: Record<string, Record<string, number>> }
+
+function loadRankings(): Rankings {
   for (const relative of ["./rankings.json", "../rankings.json"]) {
     try {
       const parsed = JSON.parse(readFileSync(new URL(relative, import.meta.url), "utf8")) as {
         rank?: Record<string, number>
+        rankByKind?: Record<string, Record<string, number>>
       }
-      if (parsed.rank && typeof parsed.rank === "object") return parsed.rank
+      if (parsed.rank && typeof parsed.rank === "object") {
+        return { rank: parsed.rank, byKind: parsed.rankByKind ?? {} }
+      }
     } catch {
       continue
     }
   }
   console.warn("tier-router: rankings.json not readable, falling back to price percentiles")
-  return {} as Record<string, number>
+  return { rank: {}, byKind: {} }
 }
 
 export default Plugin.define({
@@ -245,7 +250,10 @@ export default Plugin.define({
     /** Try each candidate in order, the way a fallback list works. */
     async function ask(tierName: string, prompt: string, anchorKey: string | undefined, kind?: string) {
       const pool = await catalogue()
-      const candidates: Resolved[] = resolveCandidates(tiers[tierName] ?? {}, pool, anchorKey, rankings, kind)
+      // A kind-specific table wins over the general one, so a model that is
+      // strong at code but average overall can still lead a code consult.
+      const table = kind && rankings.byKind[kind] ? { ...rankings.rank, ...rankings.byKind[kind] } : rankings.rank
+      const candidates: Resolved[] = resolveCandidates(tiers[tierName] ?? {}, pool, anchorKey, table, kind)
       if (candidates.length === 0) throw new Error(`tier "${tierName}" resolved no models`)
       console.warn(
         `tier-router: ${tierName}${kind ? `/${kind}` : ""} for base ${anchorKey ?? "unknown"} -> ` +
