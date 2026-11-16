@@ -361,6 +361,9 @@ fix, before the conductor ever saw it.
   request, but only within the same provider
   ([docs](https://opencode.ai/docs/build/plugins/server)), so it cannot move a
   Claude agent onto a DeepSeek tier. This plugin does not register that hook.
+- A tool result that carries a non-finite number is dropped by OpenCode and
+  shows as `Tool result missing`. The budget display now prints `no cap` rather
+  than `Infinity`, and there is a test for the unbounded case.
 - Anthropic validates that an advisor is at least as capable as its executor.
   Here the tier ladder assumes the same, and enforces it only through price,
   which is a proxy rather than a capability check.

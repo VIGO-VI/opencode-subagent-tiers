@@ -236,3 +236,10 @@ test("a justification lifts the share but never the hard cap", () => {
   const overCap = budgetFor({ ...spec, hardCap: 1_000 }, 100_000, 900, 500, "a long enough justification here")
   assert.equal(overCap.allowed, false)
 })
+
+test("a tier with no share and no cap is unbounded", () => {
+  const verdict = budgetFor({}, 100_000, 0, 50_000)
+  assert.equal(verdict.allowed, true)
+  assert.equal(verdict.bound, "none")
+  assert.equal(Number.isFinite(verdict.limit), false)
+})

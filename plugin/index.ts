@@ -376,7 +376,9 @@ export default Plugin.define({
           const verdict = budgetFor(policy, sessionTokens, slot.spent, reserved, args.reason)
           if (!verdict.allowed) {
             throw new Error(
-              `consult: the "${target}" tier may spend ${Math.round(verdict.limit)} tokens ` +
+              `consult: the "${target}" tier may spend ${
+                Number.isFinite(verdict.limit) ? Math.round(verdict.limit) : "any"
+              } tokens ` +
                 `(${verdict.bound}), the session has measured ${sessionTokens} tokens, and ` +
                 `${slot.spent} is already spent, so this ${reserved}-token call does not fit. ` +
                 "Pass a one-line `reason` to exceed the share up to the hard cap, " +
@@ -395,17 +397,20 @@ export default Plugin.define({
           const total = slot.spent + charged
           await charge(slot.ledgerKey, slot.ledger, target, total)
           await ctx.storage.set(usesKey, { ...uses, [target]: used + 1 })
-          const shown = `${total}/${Math.round(verdict.limit)}`
+          // Never put a non-finite number in the result: the harness drops it.
+          const shown = Number.isFinite(verdict.limit)
+            ? `${total}/${Math.round(verdict.limit)}`
+            : `${total}`
           return {
             content: `[${target} · ${answer.model} · ${shown} tokens]\n\n${reply}`,
             metadata: {
               tier: target,
               model: answer.model,
               picked: answer.note,
-              callerTier: caller.tier ?? null,
-              base: caller.base ?? null,
+              callerTier: caller.tier ?? "unknown",
+              base: caller.base ?? "unknown",
               tokens: charged,
-              budget: Math.round(verdict.limit),
+              budget: Number.isFinite(verdict.limit) ? Math.round(verdict.limit) : null,
               budgetBound: verdict.bound,
               bypassed: verdict.bypassed,
               uses: `${used + 1}${policy.maxUses === undefined ? "" : `/${policy.maxUses}`}`,
