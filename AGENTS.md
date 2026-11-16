@@ -33,9 +33,15 @@ expensive part of the session.
   fan-out would have.
 - A top-level session has no parent, so `handoff` there skips its skim by design.
   End a top-level turn with a normal reply after handing the work to workers.
-- At most three children running at once.
+- At most fifteen children running at once, and spawning comes before reading: a
+  conductor that has opened a file first has already lost the argument. Most
+  children should be `swarm-worker`, which costs nothing, so a wide fan-out is
+  the cheap option rather than the extravagant one.
 - One worker, one question, one result shape. Name the paths and say what not to
   do. Ask for the lines that decide the answer, never a whole file.
+- Builds, tests and anything that writes to the working tree stay with the
+  conductor unless a skill says otherwise. A rule that forbids delegating a
+  build is about the build, not about reading, searching or planning.
 
 ## Consulting up
 

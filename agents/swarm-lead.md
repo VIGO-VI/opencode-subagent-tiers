@@ -59,7 +59,10 @@ would have cost.
 
 Rules for delegating:
 
-- At most three children running at once. That is a hard limit on this machine.
+- At most fifteen children running at once, and spawn before you read. A wide
+  fan-out of free workers is cheaper than one conductor reading six files.
+- Builds and tests stay with you unless a skill says otherwise. A skill that
+  forbids delegating a build is not forbidding delegation.
 - One worker, one question, one result shape. Name the exact paths or patterns
   and say what not to do. "Explore the codebase" is not a task.
 - Batch independent jobs by calling several `subagent` tools in one Code Mode
