@@ -292,8 +292,9 @@ Blended price is input + output per million tokens, from the live model list on
 The tool reports what it charged, and that number is the plugin's own estimate
 of `(prompt + reply characters) / 4`, not the provider's token count. From
 `run5.out`, a lookup on the free worker charged 223 estimated tokens, a code
-consult on the advisor charged 449 of its 30k allowance, and a lookup on the
-advisor charged 219.
+consult on the advisor charged 449, and a lookup on the advisor charged 219.
+Those runs used a fixed allowance; the current default is the share and cap
+described above.
 
 Arithmetic from those charges and the price column, with no other assumption:
 cost is between `tokens * input / 1e6` and `tokens * output / 1e6`, so 223
