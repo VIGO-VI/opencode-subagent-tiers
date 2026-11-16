@@ -77,6 +77,10 @@ the permission graph: an agent can only spawn the agents its `subagent` rules
 allow. `install.sh` prints that graph's depth and sets the ceiling to 5, which
 is more than this layout needs. Override with `SUBAGENT_DEPTH=n ./install.sh`.
 
+In practice one or two layers cover almost every session. Headroom costs
+nothing, because an agent only spawns when its prompt says to, and the cheap
+profiles refuse to spawn at all.
+
 Then pick `swarm-lead` as the agent for a session, or let the main agent delegate
 to it.
 
