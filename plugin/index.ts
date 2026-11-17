@@ -336,23 +336,38 @@ export default Plugin.define({
      */
     const COOLDOWN_BASE_MS = 60_000
     const COOLDOWN_MAX_MS = 600_000
+    const COOLDOWN_FORGET_MS = 3_600_000
 
-    type Cooldown = { strikes: number; until: number }
+    type Cooldown = { strikes: number; until: number; at: number }
 
-    /** Every model still cooling, with expired entries dropped. */
+    /**
+     * The remembered strikes, including those whose window has ended. A model
+     * that is cooling is not retried, so the next refusal always arrives after
+     * its window and looked like a first strike, which is why the wait never
+     * grew past a minute. A record is forgotten an hour after its last strike.
+     */
     async function cooldowns(): Promise<Record<string, Cooldown>> {
       const raw = ((await ctx.storage.get("cooldown").catch(() => undefined)) ?? {}) as Record<string, Cooldown>
       const now = Date.now()
       const live: Record<string, Cooldown> = {}
       for (const [key, value] of Object.entries(raw)) {
         const until = Number(value?.until ?? 0)
-        if (until > now) live[key] = { strikes: Number(value?.strikes ?? 1), until }
+        const at = Number(value?.at ?? until)
+        if (now - at > COOLDOWN_FORGET_MS) continue
+        live[key] = { strikes: Number(value?.strikes ?? 1), until, at }
       }
       return live
     }
 
+    /** Only the models whose window is still open. */
     async function coolingKeys(): Promise<Set<string>> {
-      return new Set(Object.keys(await cooldowns()))
+      const now = Date.now()
+      const live = await cooldowns()
+      return new Set(
+        Object.entries(live)
+          .filter(([, value]) => value.until > now)
+          .map(([key]) => key),
+      )
     }
 
     /** Put a model out for a doubling wait, longer with every strike in a row. */
@@ -360,7 +375,10 @@ export default Plugin.define({
       const live = await cooldowns()
       const strikes = Number(live[key]?.strikes ?? 0) + 1
       const wait = Math.min(COOLDOWN_MAX_MS, COOLDOWN_BASE_MS * 2 ** (strikes - 1))
-      await ctx.storage.set("cooldown", { ...live, [key]: { strikes, until: Date.now() + wait } })
+      await ctx.storage.set("cooldown", {
+        ...live,
+        [key]: { strikes, until: Date.now() + wait, at: Date.now() },
+      })
       trace.line(`tier-router: ${key} rate limited, out for ${Math.round(wait / 1000)}s (strike ${strikes})`)
     }
 
@@ -1011,7 +1029,7 @@ export default Plugin.define({
         if (now - (informed.get(parent) ?? 0) < 60_000) return
         informed.set(parent, now)
         const live = await cooldowns()
-        const wait = Math.max(1, Math.round(((live[key]?.until ?? now + COOLDOWN_BASE_MS) - now) / 1000))
+        const wait = Math.max(1, Math.round((Math.max(live[key]?.until ?? 0, now + COOLDOWN_BASE_MS) - now) / 1000))
         await ctx.session.synthetic({
           sessionID: parent,
           description: "tier router: subagent rate limit",
@@ -1041,14 +1059,16 @@ export default Plugin.define({
         )
         if (candidates.length === 0) return
         const live = await cooldowns()
-        const warm = candidates.filter((candidate) => !live[modelKey(candidate.ref)])
+        const nowMs = Date.now()
+        const cooling = (key: string) => (live[key]?.until ?? 0) > nowMs
+        const warm = candidates.filter((candidate) => !cooling(modelKey(candidate.ref)))
         // Hold whatever this session was first served while it is still a
         // candidate and still warm. Re-picking the top candidate on every
         // request would cold-write the prefix whenever the model list reorders,
         // which is the cost prompt caching exists to avoid.
         const remembered = pinned.get(event.sessionID)
         const held = remembered
-          ? candidates.find((candidate) => modelKey(candidate.ref) === remembered && !live[remembered])
+          ? candidates.find((candidate) => modelKey(candidate.ref) === remembered && !cooling(remembered))
           : undefined
         // When every candidate is cooling, the one that recovers soonest is
         // still a better try than the one that just refused.
