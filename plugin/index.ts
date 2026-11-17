@@ -1198,7 +1198,7 @@ export default Plugin.define({
     // with the conductor waiting behind it, which is long enough that delegating
     // looks broken. Fail the request instead: the next one picks another model.
     try {
-      await ctx.session.hook("retry", (event) => {
+      await ctx.session.hook("retry", async (event) => {
         // Two kinds of refusal are worth another model rather than another
         // attempt at this one: a rate limit, and a model that will not serve
         // this account at all. The second arrives as an ordinary provider error
@@ -1216,11 +1216,14 @@ export default Plugin.define({
         // either, so it goes out for hours rather than doubling from a minute.
         // Six hours is short enough that turning the setting on is noticed the
         // same day and long enough that a session stops paying for the attempt.
-        if (gated) void strike(key, GATE_COOLDOWN_MS)
-        else void strike(key)
+        // Awaited, not fired and forgotten. A reload while the write is in
+        // flight loses it, which showed as a strike that never reached storage
+        // and a provider key that was never written.
+        if (gated) await strike(key, GATE_COOLDOWN_MS)
+        else await strike(key)
         // A free model's limit is the provider's free allowance, so it is
         // recorded against the provider and every free model on it goes out.
-        if (limited) void strikeFreeTier(event.model.providerID, key)
+        if (limited) await strikeFreeTier(event.model.providerID, key)
         // The model that just refused joins the ones this session will not ask
         // again, so the next attempt moves forward instead of circling.
         const done = failed.get(String(event.sessionID)) ?? new Set<string>()
@@ -1230,7 +1233,7 @@ export default Plugin.define({
         // model that is reachable now, which is what the last resolve recorded.
         const giveUp = exhausted.has(String(event.sessionID)) || event.attempt >= 4
         // Decide before speaking, so the notice describes what will happen.
-        void inform(event.sessionID, String(event.agent), key, giveUp)
+        await inform(event.sessionID, String(event.agent), key, giveUp)
         // Assign the decision rather than adjust it: a rate limit arrives with
         // retry already true and a plain provider error does not.
         event.decision = giveUp
