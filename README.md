@@ -156,16 +156,27 @@ OPENCODE_CONFIG_DIR=~/.local/share/vigo-agent/.config/opencode ./install.sh
 ```
 
 A per-request reminder covers the case instructions miss. A `context` hook appends
-one sentence to the system prompt of a session that has not spawned anything yet,
-and only for agents whose permissions allow spawning, which is read from the
-permission rules rather than a list of names. It starts on the second request, the way the vendor's own nudge waits for the
-executor to orient, and stops after the first spawn or eight nudges, whichever
-comes first. `nudge: false` turns it off.
+one sentence to the system prompt of a session that has made five requests since
+it last spawned a subagent, and only for agents whose permissions allow spawning,
+which is read from the permission rules rather than a list of names. It starts on
+the second request and comes back every time the session drifts into working
+alone again, because the interval is measured from the last spawn instead of
+being a one-shot budget. `nudge: 5` sets the interval, `nudge: false` turns it
+off.
 
 It is cache-safe by construction: the sentence is identical every time, so it
 extends the request tail instead of rewriting the prefix, and the prompt cache
-still matches everything before it. The tail changes once, when the reminder
-stops, which is one cache miss rather than one per request.
+still matches everything before it. The tail changes twice per drift, when the
+reminder appears and when a spawn removes it, which is two cache misses per cycle
+instead of one per request.
+
+A rate-limited worker fails fast. A `retry` hook drops a worker-tier
+`provider.rate-limit` that asks for more than ten seconds, and allows one retry
+of two seconds otherwise. The free tiers answer with a fifteen-minute
+`Retry-After`, which leaves the conductor blocked behind a worker that is not
+going to reply, and that stall is what teaches a conductor to stop delegating.
+Failing the worker returns the error to the conductor at once, so it can
+escalate to `swarm-worker-code` or do the work itself.
 
 What makes an agent actually delegate, in order of strength:
 

@@ -200,5 +200,5 @@
     "deliver": "parent",
     "maxChars": 8000
   },
-  "nudge": 8
+  "nudge": 5
 }
