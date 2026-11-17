@@ -322,6 +322,18 @@ test("a model without tools, or with too small a context, is not a candidate", (
   assert.deepEqual(picked.map((entry) => entry.ref.id), ["good"])
 })
 
+test("the cheapest cloud copy of a model wins, and the local copy is kept", () => {
+  const mixed: Candidate[] = [
+    candidate("same-model", 0.9, 400, "cloud-a", { tools: true, context: 128000 }),
+    candidate("same-model", 0.3, 390, "cloud-b", { tools: true, context: 128000 }),
+    candidate("same-model", 0.5, 380, "ollama", { tools: true, context: 128000, derivedRank: 60 }),
+  ]
+  const spec: TierSpec = { pick: { ratio: [0, 10], prefer: "cost", limit: 3, requireTools: true } }
+  const picked = pickCandidates(spec, mixed, "cloud-b/same-model", {})
+  const providers = picked.map((entry) => entry.ref.providerID)
+  assert.deepEqual(providers.sort(), ["cloud-b", "ollama"])
+})
+
 test("a local provider is recognised and given stand-in scores", () => {
   assert.equal(isLocalProvider("ollama"), true)
   assert.equal(isLocalProvider("lmstudio"), true)

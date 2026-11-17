@@ -111,6 +111,13 @@ a job whose brief alone would not fit. Both are fields in `tiers.json`:
 `requireTools` is on for every tier, and `minContext` is 16000 for the lead and
 advisor tiers where briefs and diffs are larger.
 
+The same model often appears more than once: this machine's catalog carries 15
+ids under two providers, and `deepseek-v4.1-flash` is 0.15/0.6 on one and 0.3/1.2
+on the other. The selector keeps the cheapest cloud copy and, separately, the
+local copy of a family, because two cloud backends for one model are one fallback
+between them while a local copy fails differently. `dedupe: false` keeps every
+copy.
+
 A hybrid setup needs no extra switch. Give the local models a pseudo-price, leave
 the cloud models at their list price, and both compete in the same bands with the
 same rank table. `allow` narrows a tier to chosen providers if a user wants, for

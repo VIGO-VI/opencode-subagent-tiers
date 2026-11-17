@@ -50,6 +50,12 @@ export type Pick = {
   requireTools?: boolean
   /** Only consider models whose context window is at least this many tokens. */
   minContext?: number
+  /**
+   * Keep one copy of a model per failure domain: the cheapest cloud copy and,
+   * separately, the local copy. Two clouds serving the same model are one
+   * fallback between them, not two.
+   */
+  dedupe?: boolean
 }
 
 export type TierSpec = {
@@ -230,7 +236,21 @@ export function pickCandidates(
     ordered = [...taken, ...paid, ...leftover]
   }
 
-  return ordered.slice(0, pick.limit ?? 3).map((entry) => ({
+  // The same model often appears on several providers, sometimes at different
+  // prices and sometimes once locally. The cheaper cloud copy wins; the local
+  // copy stays because it fails differently from a cloud one.
+  let final = ordered
+  if (pick.dedupe !== false) {
+    const seen = new Set<string>()
+    final = ordered.filter((entry) => {
+      const key = `${entry.model.id}|${isLocalProvider(entry.model.providerID) ? "local" : "cloud"}`
+      if (seen.has(key)) return false
+      seen.add(key)
+      return true
+    })
+  }
+
+  return final.slice(0, pick.limit ?? 3).map((entry) => ({
     ref: entry.model.ref,
     note:
       `${modelKey(entry.model)} ${entry.ratio.toFixed(2)}x rank ${quality(entry)}` +
