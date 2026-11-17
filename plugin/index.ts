@@ -1177,7 +1177,10 @@ export default Plugin.define({
         // whose message names a setting, so the message is what is matched.
         const limited = event.error.type === "provider.rate-limit"
         const message = `${event.error.message ?? ""} ${(event.error as { response?: { body?: string } }).response?.body ?? ""}`
-        const gated = /trains on request data|settings\/privacy|not enabled for this (account|model)/i.test(message)
+        const gated =
+          /trains on request data|settings\/privacy|not enabled for this (account|model)|model unavailable/i.test(
+            message,
+          )
         if (!limited && !gated) return
         if (agentTiers[String(event.agent)] !== "worker") return
         const key = modelKey(event.model)
