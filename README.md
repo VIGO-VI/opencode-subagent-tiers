@@ -307,6 +307,14 @@ including the free group:
 "pricing": { "anthropic/*": "free", "console-openrouter/*:free": "free" }
 ```
 
+This is also how a local setup joins the same policy. A model that costs nothing
+but occupies a GPU for twenty seconds is not free, so declare the compute cost as
+a pseudo-price and the price bands keep their meaning:
+
+```json
+"pricing": { "ollama/*": 0.5, "lmstudio/llama-70b": 3 }
+```
+
 Patterns are wildcards over `provider/model`, the most specific match wins, and
 `"free"` means zero. That is how adding a connection feeds the free rotation: the
 models appear in the catalog, and one line here declares them free for you. The
