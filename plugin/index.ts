@@ -266,15 +266,43 @@ export default Plugin.define({
       return current
     }
 
-    /** Tokens the root session has measured so far, from its own messages. */
+    /** Cached input is billed below face value, so a budget has to weight it the same way. */
+    const CACHE_READ_WEIGHT = 0.1
+    const CACHE_WRITE_WEIGHT = 1.25
+
+    /**
+     * Tokens the root session has measured so far, from its own messages.
+     *
+     * `tokens.input` holds only the uncached part of the prompt: a live session
+     * shows `{"input":1784,"cache":{"read":58496}}` on one message. Adding only
+     * input, output and reasoning therefore counts a warm prefix as free, and a
+     * cached session reads as a fraction of what it costs, so the allowance
+     * never bites. Cached reads are billed at a tenth of the input price by
+     * DeepSeek and Anthropic and at a quarter by Gemini, so they are weighted
+     * rather than counted whole. A provider that reports no cache is unaffected.
+     */
     async function measuredTokens(sessionID: string) {
       const root = await rootSession(sessionID)
       const messages = await ctx.session.context({ sessionID: root }).catch(() => [])
       let total = 0
       for (const message of messages) {
-        const tokens = (message as { tokens?: { input?: number; output?: number; reasoning?: number } }).tokens
+        const tokens = (
+          message as {
+            tokens?: {
+              input?: number
+              output?: number
+              reasoning?: number
+              cache?: { read?: number; write?: number }
+            }
+          }
+        ).tokens
         if (!tokens) continue
-        total += Number(tokens.input ?? 0) + Number(tokens.output ?? 0) + Number(tokens.reasoning ?? 0)
+        total +=
+          Number(tokens.input ?? 0) +
+          Number(tokens.output ?? 0) +
+          Number(tokens.reasoning ?? 0) +
+          CACHE_READ_WEIGHT * Number(tokens.cache?.read ?? 0) +
+          CACHE_WRITE_WEIGHT * Number(tokens.cache?.write ?? 0)
       }
       return total
     }
