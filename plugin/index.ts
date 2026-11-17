@@ -1,7 +1,8 @@
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs"
+import { mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs"
 import { Settings } from "../rpc.ts"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { fileURLToPath } from "node:url"
 import { Plugin } from "@opencode/plugin"
 
 import { createTrace, defaultTracePath } from "./trace.ts"
@@ -166,6 +167,19 @@ function loadRankings(trace: ReturnType<typeof createTrace>): Rankings {
   }
   trace.line("tier-router: rankings.json not readable, falling back to price percentiles")
   return { rank: {}, byKind: {} }
+}
+
+/**
+ * The mtime of this file, so the trace names the build that is actually loaded.
+ * A stale plugin and a queued message look identical from a notice, and this is
+ * the only way to tell them apart from the outside.
+ */
+function buildStamp(): string {
+  try {
+    return statSync(fileURLToPath(import.meta.url)).mtime.toISOString()
+  } catch {
+    return "unknown"
+  }
 }
 
 export default Plugin.define({
@@ -1243,7 +1257,7 @@ export default Plugin.define({
     }
 
     trace.line(
-      `tier-router: consult and handoff ready, tiers ${order.join(" < ")}` +
+      `tier-router: consult and handoff ready, build ${buildStamp()}, tiers ${order.join(" < ")}` +
         ` (caller tier from the agent's model, price bands from the session's base model)` +
         (trace.path ? `; resolver trace in ${trace.path}` : ""),
     )
