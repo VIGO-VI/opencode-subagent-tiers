@@ -378,7 +378,14 @@ export default Plugin.define({
     async function strike(key: string, fixedMs?: number) {
       const live = await cooldowns()
       const strikes = Number(live[key]?.strikes ?? 0) + 1
-      const wait = fixedMs ?? Math.min(COOLDOWN_MAX_MS, COOLDOWN_BASE_MS * 2 ** (strikes - 1))
+      // Three strikes is out. The doubling exists to ride out a short window, and
+      // a third refusal in a row says this is not a short window, so the model
+      // goes away for the same hours as one that will not serve the account at
+      // all. Without this it would be retried every ten minutes for as long as
+      // the process lives.
+      const wait =
+        fixedMs ??
+        (strikes >= 3 ? GATE_COOLDOWN_MS : Math.min(COOLDOWN_MAX_MS, COOLDOWN_BASE_MS * 2 ** (strikes - 1)))
       const now = Date.now()
       // A window never shortens. A model that refused on a setting and later
       // answers a rate limit is still gated, so a minute must not replace the
