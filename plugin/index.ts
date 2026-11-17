@@ -1165,7 +1165,10 @@ export default Plugin.define({
         // Short waits only. The point is to reach another model, not to sit out
         // this one's window, so a long retryAfter is ignored; the third attempt
         // gives up and hands back to the conductor.
-        if (event.decision.retry) event.decision.delay = event.attempt <= 1 ? 1_500 : 4_000
+        // Set the decision rather than adjusting it. A rate limit arrives with
+        // retry already true, a plain provider error does not, so adjusting the
+        // delay left a gated model ending the request with nothing tried.
+        event.decision = { retry: true, delay: event.attempt <= 1 ? 1_500 : 4_000 }
       })
     } catch (error) {
       trace.line(`tier-router: retry hook unavailable, no fast fail: ${(error as Error)?.message ?? error}`)
