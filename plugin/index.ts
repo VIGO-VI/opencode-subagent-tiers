@@ -1112,12 +1112,19 @@ export default Plugin.define({
         // And the caller is told, so it retries with a working subagent instead
         // of taking the reading over itself.
         void inform(event.sessionID, String(event.agent), modelKey(event.model))
-        const longWait = (event.error.retryAfterMs ?? 0) > 10_000
-        if (event.attempt >= 2 || longWait) {
+        // Let the attempt happen instead of failing the worker. A retry is a new
+        // request, so the resolve hook runs again and the strike just recorded
+        // keeps this model out, which is what turns one refusal into a switch.
+        // Failing here gave the conductor a dead worker and no swap at all,
+        // because the worker died before it could make the second request.
+        if (event.attempt >= 3) {
           event.decision = { retry: false }
           return
         }
-        if (event.decision.retry) event.decision.delay = 2_000
+        // Short waits only. The point is to reach another model, not to sit out
+        // this one's window, so a long retryAfter is ignored; the third attempt
+        // gives up and hands back to the conductor.
+        if (event.decision.retry) event.decision.delay = event.attempt <= 1 ? 1_500 : 4_000
       })
     } catch (error) {
       trace.line(`tier-router: retry hook unavailable, no fast fail: ${(error as Error)?.message ?? error}`)
