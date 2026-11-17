@@ -342,13 +342,24 @@ consult can carry that one line and nothing else.
     "pick": {
       "ratio": [1.6, 12],
       "prefer": "quality",
-      "limit": 3,
+      "limit": 8,
       "byKind": { "lookup": { "ratio": [0.6, 4], "prefer": "cost" } }
     }
   }
 }
 ```
 
+- `limit` is how many candidates the tier may try, in rank order, before it
+  gives up: a fallback list, not a shortlist. A provider can refuse a model for
+  reasons the resolver cannot see — an endpoint excluded by the account's data
+  policy, a provider with no credit left — and a list that stops at three
+  candidates hands that refusal to the caller. Every candidate tried is written
+  to the resolver trace, so a long walk is visible rather than guessed at. The
+  time limit is per call, not per candidate: `timeoutMs` covers the whole walk,
+  so one slow provider cannot turn a consult into eight timeouts. What a walk
+  should not do is hide a tier that is entirely dead: the advisor tier shipped
+  at three and resolved to three models on one provider that answered `402`,
+  which is why its default is now eight.
 - `ratio` is the blended price (input + output, per million tokens) as a
   multiple of the session's base model. A Claude session therefore reaches for
   Claude-priced advisors, and a cheap-model session reaches for cheap ones.

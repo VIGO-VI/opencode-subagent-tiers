@@ -351,7 +351,16 @@ export default Plugin.define({
       )
       const available = new Set(pool.map((model) => modelKey(model)))
       const failures: string[] = []
+      // The budget covers the whole walk, not each candidate. A tier is a
+      // fallback list now, and a list that can spend its timeout once per entry
+      // turns one slow provider into a consult that never returns.
+      const deadline = Date.now() + budgetMs
       for (const candidate of candidates) {
+        const remaining = deadline - Date.now()
+        if (remaining <= 0) {
+          failures.push(`${modelKey(candidate.ref)}: not tried, the call budget ran out`)
+          break
+        }
         if (!available.has(modelKey(candidate.ref))) {
           failures.push(`${modelKey(candidate.ref)}: not available`)
           continue
@@ -359,7 +368,7 @@ export default Plugin.define({
         try {
           const result = await withTimeout(
             ctx.experimental.generate.text({ model: candidate.ref, prompt }),
-            budgetMs,
+            remaining,
             `${modelKey(candidate.ref)} reply`,
           )
           const text = (result?.text ?? "").trim()
