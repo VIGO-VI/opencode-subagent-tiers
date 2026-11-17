@@ -993,6 +993,8 @@ export default Plugin.define({
     // agent the user chose for the session keeps the model they chose, which is
     // why this only serves sessions that have a parent.
     const pinned = new Map<string, string>()
+    /** Sessions whose tier had no warm candidate left, so a retry reaches the same model. */
+    const exhausted = new Set<string>()
     const parented = new Map<string, boolean>()
     let poolAt = 0
     let poolCache: Candidate[] = []
@@ -1092,6 +1094,10 @@ export default Plugin.define({
         const nowMs = Date.now()
         const cooling = (key: string) => (live[key]?.until ?? 0) > nowMs
         const warm = candidates.filter((candidate) => !cooling(modelKey(candidate.ref)))
+        // A tier with nothing warm left serves the soonest to recover, so a
+        // retry would reach the same model and pay for the same refusal again.
+        if (warm.length === 0) exhausted.add(event.sessionID)
+        else exhausted.delete(event.sessionID)
         // Hold whatever this session was first served while it is still a
         // candidate and still warm. Re-picking the top candidate on every
         // request would cold-write the prefix whenever the model list reorders,
@@ -1158,7 +1164,7 @@ export default Plugin.define({
         // keeps this model out, which is what turns one refusal into a switch.
         // Failing here gave the conductor a dead worker and no swap at all,
         // because the worker died before it could make the second request.
-        if (event.attempt >= 3) {
+        if (event.attempt >= 3 || exhausted.has(String(event.sessionID))) {
           event.decision = { retry: false }
           return
         }
