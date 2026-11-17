@@ -282,6 +282,8 @@ export default Plugin.define({
           id: model.id,
           providerID: model.providerID,
           price: applyPricing(blendedPrice(model.cost), options.pricing, modelKey(model), model.id),
+          tools: model.capabilities?.tools !== false,
+          context: Number(model.limit?.context ?? 0),
           released: Number(model.time?.released ?? 0),
         })
       }

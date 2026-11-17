@@ -14,6 +14,10 @@ export type Candidate = {
   providerID: string
   price: number
   released: number
+  /** Whether the model can call tools, which every worker needs. */
+  tools?: boolean
+  /** Context window in tokens, so a small local model is not handed a big job. */
+  context?: number
 }
 
 export type Pick = {
@@ -40,6 +44,10 @@ export type Pick = {
   freeSlots?: number
   /** How many candidates to keep as fallbacks. */
   limit?: number
+  /** Only consider models that can call tools. */
+  requireTools?: boolean
+  /** Only consider models whose context window is at least this many tokens. */
+  minContext?: number
 }
 
 export type TierSpec = {
@@ -141,7 +149,9 @@ export function pickCandidates(
   const allowed = pool.filter(
     (model) =>
       (!pick.allow || matchesAny(pick.allow, modelKey(model), model.id)) &&
-      !matchesAny(pick.deny, modelKey(model), model.id),
+      !matchesAny(pick.deny, modelKey(model), model.id) &&
+      (!pick.requireTools || model.tools !== false) &&
+      (pick.minContext === undefined || (model.context ?? Number.POSITIVE_INFINITY) >= pick.minContext),
   )
 
   const scored = allowed.map((model) => {

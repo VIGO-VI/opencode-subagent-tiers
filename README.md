@@ -101,6 +101,22 @@ theirs to decide, and install says so rather than guessing:
 3. Add a small `rank` block for their families if they want quality ordering
    instead of the neutral default.
 
+Device capability is checked, not assumed. A candidate is skipped when it cannot
+call tools, since every worker needs them, and when its context window is below a
+tier's `minContext`. That is what keeps a 4k-context local model from being handed
+a job whose brief alone would not fit. Both are fields in `tiers.json`:
+`requireTools` is on for every tier, and `minContext` is 16000 for the lead and
+advisor tiers where briefs and diffs are larger.
+
+A hybrid setup needs no extra switch. Give the local models a pseudo-price, leave
+the cloud models at their list price, and both compete in the same bands with the
+same rank table. `allow` narrows a tier to chosen providers if a user wants, for
+example, local workers and a cloud advisor:
+
+```json
+"advisor": { "pick": { "allow": ["anthropic/*", "openai/*"], "prefer": "quality" } }
+```
+
 Node 22.6 or newer is needed for the install step, because the model resolver
 reads `scripts/models.mjs` and that imports the TypeScript selection logic
 directly. If Node is missing, install prints a warning for every agent left

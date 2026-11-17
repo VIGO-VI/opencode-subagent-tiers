@@ -17,8 +17,14 @@ import {
   type TierSpec,
 } from "./select.ts"
 
-function candidate(id: string, price: number, released: number, providerID = "test"): Candidate {
-  return { ref: { providerID, id }, id, providerID, price, released }
+function candidate(
+  id: string,
+  price: number,
+  released: number,
+  providerID = "test",
+  extra: Partial<Candidate> = {},
+): Candidate {
+  return { ref: { providerID, id }, id, providerID, price, released, ...extra }
 }
 
 // A catalog shaped like this machine's: a free flash model, cheap flash models,
@@ -298,6 +304,19 @@ test("a hedging report without evidence scores low and names what is missing", (
   assert.ok(weak.score < 0.2)
   assert.ok(weak.missing.includes("no file:line citation"))
   assert.ok(weak.missing.includes("the worker hedged"))
+})
+
+test("a model without tools, or with too small a context, is not a candidate", () => {
+  const mixed: Candidate[] = [
+    candidate("no-tools", 0.1, 400, "local", { tools: false, context: 128000 }),
+    candidate("small", 0.1, 390, "local", { tools: true, context: 4096 }),
+    candidate("good", 0.1, 380, "local", { tools: true, context: 32000 }),
+  ]
+  const spec: TierSpec = {
+    pick: { ratio: [0, 10], prefer: "cost", requireTools: true, minContext: 8000, limit: 3 },
+  }
+  const picked = pickCandidates(spec, mixed, "local/good", {})
+  assert.deepEqual(picked.map((entry) => entry.ref.id), ["good"])
 })
 
 test("a tier with no share and no cap is unbounded", () => {

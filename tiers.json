@@ -62,7 +62,8 @@
           "lookup": {
             "prefer": "cost"
           }
-        }
+        },
+        "requireTools": true
       },
       "brief": "You are the cheapest tier and you exist to save the caller money. Decide from the brief alone. If it is thin, name the one fact that is missing instead of guessing, and keep the answer short."
     },
@@ -95,7 +96,9 @@
               2.5
             ]
           }
-        }
+        },
+        "requireTools": true,
+        "minContext": 16000
       },
       "brief": "You are the working tier: a capable cheap model with no tools and no history. The caller is another cheap model, so be concrete and name the step it should take next."
     },
@@ -134,7 +137,9 @@
             ],
             "prefer": "quality"
           }
-        }
+        },
+        "requireTools": true,
+        "minContext": 16000
       },
       "brief": "You are the most expensive tier in this session, called because the decision matters more than the tokens. You see one brief and no history. Judge the decision, not the writing. If the brief lacks the deciding fact, say so in one line."
     }
