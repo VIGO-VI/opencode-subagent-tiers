@@ -337,6 +337,8 @@ export default Plugin.define({
     const COOLDOWN_BASE_MS = 60_000
     const COOLDOWN_MAX_MS = 600_000
     const COOLDOWN_FORGET_MS = 3_600_000
+    /** A model that will not serve the account is not a minute-long problem. */
+    const GATE_COOLDOWN_MS = 6 * 3_600_000
 
     type Cooldown = { strikes: number; until: number; at: number }
 
@@ -353,7 +355,9 @@ export default Plugin.define({
       for (const [key, value] of Object.entries(raw)) {
         const until = Number(value?.until ?? 0)
         const at = Number(value?.at ?? until)
-        if (now - at > COOLDOWN_FORGET_MS) continue
+        // A window longer than the forget period is kept until it ends, so a
+        // gated model stays out for its hours instead of being pruned early.
+        if (until <= now && now - at > COOLDOWN_FORGET_MS) continue
         live[key] = { strikes: Number(value?.strikes ?? 1), until, at }
       }
       return live
@@ -371,15 +375,16 @@ export default Plugin.define({
     }
 
     /** Put a model out for a doubling wait, longer with every strike in a row. */
-    async function strike(key: string) {
+    async function strike(key: string, fixedMs?: number) {
       const live = await cooldowns()
       const strikes = Number(live[key]?.strikes ?? 0) + 1
-      const wait = Math.min(COOLDOWN_MAX_MS, COOLDOWN_BASE_MS * 2 ** (strikes - 1))
+      const wait = fixedMs ?? Math.min(COOLDOWN_MAX_MS, COOLDOWN_BASE_MS * 2 ** (strikes - 1))
       await ctx.storage.set("cooldown", {
         ...live,
         [key]: { strikes, until: Date.now() + wait, at: Date.now() },
       })
-      trace.line(`tier-router: ${key} rate limited, out for ${Math.round(wait / 1000)}s (strike ${strikes})`)
+      const kind = fixedMs === undefined ? "rate limited" : "refused"
+      trace.line(`tier-router: ${key} ${kind}, out for ${Math.round(wait / 1000)}s (strike ${strikes})`)
     }
 
     /** A reply clears the record, so a recovered model is tried at once. */
@@ -1044,16 +1049,19 @@ export default Plugin.define({
         }
         kept[slot] = until
         await ctx.storage.set("informed", kept)
-        const wait = Math.max(1, Math.round((until - now) / 1000))
+        const seconds = Math.max(1, Math.round((until - now) / 1000))
+        const span =
+          seconds >= 3600 ? `${Math.round(seconds / 3600)}h` : seconds >= 90 ? `${Math.round(seconds / 60)} min` : `${seconds}s`
         // The wording follows what the retry does. The first two attempts are
         // still running on another model, so the caller should wait for that
-        // worker rather than start the work itself.
+        // worker rather than start the work itself. Neutral about the cause,
+        // because a rate limit and a refusal read the same from here.
         const text =
           attempt < 3
-            ? `${agent} hit a rate limit on ${key}, which is out for about ${wait}s. ` +
+            ? `${agent} could not use ${key}, which is out for about ${span}. ` +
               `The request is being retried on another model in the same tier, so wait for that worker ` +
               `rather than doing the work yourself.`
-            : `${agent} hit a rate limit on ${key}, which is out for about ${wait}s. ` +
+            : `${agent} could not use ${key}, which is out for about ${span}. ` +
               `The tier gave up after ${attempt} attempts, so spawn it again rather than doing the work yourself.`
         await ctx.session.synthetic({
           sessionID: parent,
@@ -1126,14 +1134,25 @@ export default Plugin.define({
     // looks broken. Fail the request instead: the next one picks another model.
     try {
       await ctx.session.hook("retry", (event) => {
-        if (event.error.type !== "provider.rate-limit") return
+        // Two kinds of refusal are worth another model rather than another
+        // attempt at this one: a rate limit, and a model that will not serve
+        // this account at all. The second arrives as an ordinary provider error
+        // whose message names a setting, so the message is what is matched.
+        const limited = event.error.type === "provider.rate-limit"
+        const message = `${event.error.message ?? ""} ${(event.error as { response?: { body?: string } }).response?.body ?? ""}`
+        const gated = /trains on request data|settings\/privacy|not enabled for this (account|model)/i.test(message)
+        if (!limited && !gated) return
         if (agentTiers[String(event.agent)] !== "worker") return
-        // The model that just refused, so the resolve hook serves the next
-        // request from another candidate instead of the same one again.
-        void strike(modelKey(event.model))
+        const key = modelKey(event.model)
+        // A model that will not serve the account will not serve it in a minute
+        // either, so it goes out for hours rather than doubling from a minute.
+        // Six hours is short enough that turning the setting on is noticed the
+        // same day and long enough that a session stops paying for the attempt.
+        if (gated) void strike(key, GATE_COOLDOWN_MS)
+        else void strike(key)
         // And the caller is told, so it retries with a working subagent instead
         // of taking the reading over itself.
-        void inform(event.sessionID, String(event.agent), modelKey(event.model), event.attempt)
+        void inform(event.sessionID, String(event.agent), key, event.attempt)
         // Let the attempt happen instead of failing the worker. A retry is a new
         // request, so the resolve hook runs again and the strike just recorded
         // keeps this model out, which is what turns one refusal into a switch.
