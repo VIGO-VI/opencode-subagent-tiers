@@ -993,7 +993,9 @@ export default Plugin.define({
     // agent the user chose for the session keeps the model they chose, which is
     // why this only serves sessions that have a parent.
     const pinned = new Map<string, string>()
-    /** Sessions whose tier had no warm candidate left, so a retry reaches the same model. */
+    /** Per session, the models that have already refused, so none is asked twice. */
+    const failed = new Map<string, Set<string>>()
+    /** Sessions with nothing left both untried and warm. */
     const exhausted = new Set<string>()
     const parented = new Map<string, boolean>()
     let poolAt = 0
@@ -1034,7 +1036,7 @@ export default Plugin.define({
      * the cooldowns it describes, so a plugin reload does not repeat a notice
      * the caller has already read.
      */
-    async function inform(sessionID: string, agent: string, key: string, attempt: number) {
+    async function inform(sessionID: string, agent: string, key: string, gaveUp: boolean) {
       try {
         const info = await ctx.session.get({ sessionID }).catch(() => undefined)
         const parent = info?.parentID
@@ -1058,13 +1060,12 @@ export default Plugin.define({
         // still running on another model, so the caller should wait for that
         // worker rather than start the work itself. Neutral about the cause,
         // because a rate limit and a refusal read the same from here.
-        const text =
-          attempt < 3
-            ? `${agent} could not use ${key}, which is out for about ${span}. ` +
-              `The request is being retried on another model in the same tier, so wait for that worker ` +
-              `rather than doing the work yourself.`
-            : `${agent} could not use ${key}, which is out for about ${span}. ` +
-              `The tier gave up after ${attempt} attempts, so spawn it again rather than doing the work yourself.`
+        const text = gaveUp
+          ? `${agent} could not use ${key}, which is out for about ${span}, and the tier has no working model ` +
+            `left. Use swarm-worker-code or do the reading yourself.`
+          : `${agent} could not use ${key}, which is out for about ${span}. ` +
+            `The request is being retried on another model in the same tier, so wait for that worker ` +
+            `rather than doing the work yourself.`
         await ctx.session.synthetic({
           sessionID: parent,
           description: "tier router: subagent rate limit",
@@ -1093,28 +1094,31 @@ export default Plugin.define({
         const live = await cooldowns()
         const nowMs = Date.now()
         const cooling = (key: string) => (live[key]?.until ?? 0) > nowMs
-        const warm = candidates.filter((candidate) => !cooling(modelKey(candidate.ref)))
-        // A tier with nothing warm left serves the soonest to recover, so a
-        // retry would reach the same model and pay for the same refusal again.
-        if (warm.length === 0) exhausted.add(event.sessionID)
-        else exhausted.delete(event.sessionID)
-        // Hold whatever this session was first served while it is still a
-        // candidate and still warm. Re-picking the top candidate on every
-        // request would cold-write the prefix whenever the model list reorders,
-        // which is the cost prompt caching exists to avoid.
+        // Every model this session has already failed on is out of the running,
+        // whether or not its cooldown has ended. A tier is a list of attempts:
+        // while an untried model remains, the failed one is not asked again.
+        const done = failed.get(event.sessionID) ?? new Set<string>()
+        failed.set(event.sessionID, done)
+        const untried = candidates.filter((candidate) => !done.has(modelKey(candidate.ref)))
+        const warm = untried.filter((candidate) => !cooling(modelKey(candidate.ref)))
+        if (warm.length === 0) {
+          // Nothing left that is both untried and reachable now, so another
+          // attempt would repeat a refusal the caller has already paid for.
+          exhausted.add(event.sessionID)
+          return
+        }
+        exhausted.delete(event.sessionID)
+        // Hold whatever this session was first served while it is still warm and
+        // untried. Re-picking the top candidate on every request would cold-write
+        // the prefix whenever the model list reorders, which is the cost prompt
+        // caching exists to avoid.
         const remembered = pinned.get(event.sessionID)
-        const held = remembered
-          ? candidates.find((candidate) => modelKey(candidate.ref) === remembered && !cooling(remembered))
-          : undefined
-        // When every candidate is cooling, the one that recovers soonest is
-        // still a better try than the one that just refused.
-        const pick =
-          held ??
-          warm[0] ??
-          candidates
-            .slice()
-            .sort((a, b) => (live[modelKey(a.ref)]?.until ?? 0) - (live[modelKey(b.ref)]?.until ?? 0))[0]
-        if (!pick) return
+        const held = remembered ? warm.find((candidate) => modelKey(candidate.ref) === remembered) : undefined
+        const pick = held ?? warm[0]
+        if (!pick) {
+          exhausted.add(event.sessionID)
+          return
+        }
         const key = modelKey(pick.ref)
         // Sessions come and go, so the memory is bounded rather than growing
         // with the life of the process.
@@ -1156,25 +1160,21 @@ export default Plugin.define({
         // same day and long enough that a session stops paying for the attempt.
         if (gated) void strike(key, GATE_COOLDOWN_MS)
         else void strike(key)
-        // And the caller is told, so it retries with a working subagent instead
-        // of taking the reading over itself.
-        void inform(event.sessionID, String(event.agent), key, event.attempt)
-        // Let the attempt happen instead of failing the worker. A retry is a new
-        // request, so the resolve hook runs again and the strike just recorded
-        // keeps this model out, which is what turns one refusal into a switch.
-        // Failing here gave the conductor a dead worker and no swap at all,
-        // because the worker died before it could make the second request.
-        if (event.attempt >= 3 || exhausted.has(String(event.sessionID))) {
-          event.decision = { retry: false }
-          return
-        }
-        // Short waits only. The point is to reach another model, not to sit out
-        // this one's window, so a long retryAfter is ignored; the third attempt
-        // gives up and hands back to the conductor.
-        // Set the decision rather than adjusting it. A rate limit arrives with
-        // retry already true, a plain provider error does not, so adjusting the
-        // delay left a gated model ending the request with nothing tried.
-        event.decision = { retry: true, delay: event.attempt <= 1 ? 1_500 : 4_000 }
+        // The model that just refused joins the ones this session will not ask
+        // again, so the next attempt moves forward instead of circling.
+        const done = failed.get(String(event.sessionID)) ?? new Set<string>()
+        failed.set(String(event.sessionID), done)
+        done.add(key)
+        // Another attempt is worth it only while the session has an untried
+        // model that is reachable now, which is what the last resolve recorded.
+        const giveUp = exhausted.has(String(event.sessionID)) || event.attempt >= 4
+        // Decide before speaking, so the notice describes what will happen.
+        void inform(event.sessionID, String(event.agent), key, giveUp)
+        // Assign the decision rather than adjust it: a rate limit arrives with
+        // retry already true and a plain provider error does not.
+        event.decision = giveUp
+          ? { retry: false }
+          : { retry: true, delay: event.attempt <= 1 ? 1_500 : 4_000 }
       })
     } catch (error) {
       trace.line(`tier-router: retry hook unavailable, no fast fail: ${(error as Error)?.message ?? error}`)
