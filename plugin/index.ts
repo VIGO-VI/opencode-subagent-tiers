@@ -1001,6 +1001,8 @@ export default Plugin.define({
     const exhausted = new Set<string>()
     /** Sessions that have already been told, so a walk of three models is one message. */
     const announced = new Set<string>()
+    /** Sessions whose other-provider candidates have been named in the trace. */
+    const elsewhereSeen = new Set<string>()
     const parented = new Map<string, boolean>()
     let poolAt = 0
     let poolCache: Candidate[] = []
@@ -1095,10 +1097,19 @@ export default Plugin.define({
         const models = await pool()
         if (models.length === 0) return
         // The hook's contract is another model on the same provider, so only
-        // candidates on the provider already in play are offered.
-        const candidates = resolveCandidates(tiers[tierName], models, undefined, rankings.rank).filter(
-          (candidate) => candidate.ref.providerID === event.model.providerID,
-        )
+        // candidates on the provider already in play are offered. What that
+        // filter discards is logged once per session, because whether a usable
+        // model sits behind it decides if the contract is worth testing.
+        const ordered = resolveCandidates(tiers[tierName], models, undefined, rankings.rank)
+        const elsewhere = ordered.filter((candidate) => candidate.ref.providerID !== event.model.providerID)
+        if (elsewhere.length > 0 && !elsewhereSeen.has(event.sessionID)) {
+          elsewhereSeen.add(event.sessionID)
+          trace.line(
+            `tier-router: ${event.agent} on ${event.model.providerID} had ${elsewhere.length} other-provider ` +
+              `candidate(s): ${elsewhere.map((candidate) => modelKey(candidate.ref)).join(", ")}`,
+          )
+        }
+        const candidates = ordered.filter((candidate) => candidate.ref.providerID === event.model.providerID)
         if (candidates.length === 0) return
         const live = await cooldowns()
         const nowMs = Date.now()
