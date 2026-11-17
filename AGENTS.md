@@ -69,5 +69,6 @@ expensive part of the session.
 
 - The plugin changes cost and routing, not model quality. Do not claim a quality
   win from a cheaper tier without evidence from the run in front of you.
-- The resolver logs the pick as `tier-router: <tier>/<kind> for base ... -> ...`.
-  When a pick surprises you, read that line instead of guessing.
+- The resolver records the pick as `tier-router: <tier>/<kind> for base ... ->
+  ...` in `~/.local/share/opencode/log/tier-router.log`. When a pick surprises
+  you, read that file instead of guessing.

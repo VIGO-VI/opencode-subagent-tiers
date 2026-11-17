@@ -4,6 +4,8 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { Plugin } from "@opencode/plugin"
 
+import { createTrace, defaultTracePath } from "./trace.ts"
+
 import {
   applyPricing,
   budgetFor,
@@ -71,6 +73,14 @@ type Options = {
   kinds?: string[]
   /** How long one consultant call may take before it is abandoned. */
   timeoutMs?: number
+  /**
+   * Where the `tier-router:` diagnostic lines go, on top of the console.
+   * A path, or `false` for console only. Unset uses
+   * `$XDG_DATA_HOME/opencode/log/tier-router.log`, beside the server's own log.
+   * The file matters because a desktop-managed server runs with stdout on
+   * `/dev/null`, so console output from a plugin is otherwise lost.
+   */
+  log?: string | false
   /**
    * Append one reminder line to the system prompt when a session has made this
    * many model requests without spawning a subagent. The line stays while the
@@ -140,7 +150,7 @@ continue from that line alone without re-reading the report.`
 
 type Rankings = { rank: Record<string, number>; byKind: Record<string, Record<string, number>> }
 
-function loadRankings(): Rankings {
+function loadRankings(trace: ReturnType<typeof createTrace>): Rankings {
   for (const relative of ["./rankings.json", "../rankings.json"]) {
     try {
       const parsed = JSON.parse(readFileSync(new URL(relative, import.meta.url), "utf8")) as {
@@ -154,7 +164,7 @@ function loadRankings(): Rankings {
       continue
     }
   }
-  console.warn("tier-router: rankings.json not readable, falling back to price percentiles")
+  trace.line("tier-router: rankings.json not readable, falling back to price percentiles")
   return { rank: {}, byKind: {} }
 }
 
@@ -169,7 +179,8 @@ export default Plugin.define({
     const fallbackTier = options.fallback ?? order[order.length - 1] ?? "lead"
     const budget = options.budget ?? {}
     const skim = options.skim ?? {}
-    const rankings = loadRankings()
+    const trace = createTrace(options.log ?? defaultTracePath)
+    const rankings = loadRankings(trace)
     const kinds = options.kinds ?? ["general", "code", "code-go", "lookup", "review", "write"]
     const timeoutMs = options.timeoutMs ?? 60_000
 
@@ -192,7 +203,7 @@ export default Plugin.define({
     const agentTiers = options.agents ?? {}
 
     if (order.length === 0) {
-      console.warn("tier-router: no tiers configured, tools disabled")
+      trace.line("tier-router: no tiers configured, tools disabled")
       return
     }
 
@@ -334,7 +345,7 @@ export default Plugin.define({
       const table = kind && rankings.byKind[kind] ? { ...rankings.rank, ...rankings.byKind[kind] } : rankings.rank
       const candidates: Resolved[] = resolveCandidates(tiers[tierName] ?? {}, pool, anchorKey, table, kind)
       if (candidates.length === 0) throw new Error(`tier "${tierName}" resolved no models`)
-      console.warn(
+      trace.line(
         `tier-router: ${tierName}${kind ? `/${kind}` : ""} for base ${anchorKey ?? "unknown"} -> ` +
           candidates.map((candidate) => candidate.note).join(" | "),
       )
@@ -784,7 +795,7 @@ export default Plugin.define({
         },
       })
     } catch (error) {
-      console.warn(`tier-router: settings rpc unavailable: ${(error as Error)?.message ?? error}`)
+      trace.line(`tier-router: settings rpc unavailable: ${(error as Error)?.message ?? error}`)
     }
 
     // A session that delegates once and then drifts back to doing the reading
@@ -802,7 +813,7 @@ export default Plugin.define({
           reminding.delete(session)
         })
       } catch (error) {
-        console.warn(`tier-router: tool hook unavailable, no nudge: ${(error as Error)?.message ?? error}`)
+        trace.line(`tier-router: tool hook unavailable, no nudge: ${(error as Error)?.message ?? error}`)
       }
 
       try {
@@ -828,14 +839,14 @@ export default Plugin.define({
             })
             if (!reminding.has(session)) {
               reminding.add(session)
-              console.warn(`tier-router: delegation reminder on for ${agent} after ${seen} requests without a spawn`)
+              trace.line(`tier-router: delegation reminder on for ${agent} after ${seen} requests without a spawn`)
             }
           } catch {
             // A reminder must never break a request.
           }
         })
       } catch (error) {
-        console.warn(`tier-router: session hook unavailable, no nudge: ${(error as Error)?.message ?? error}`)
+        trace.line(`tier-router: session hook unavailable, no nudge: ${(error as Error)?.message ?? error}`)
       }
     }
 
@@ -855,12 +866,13 @@ export default Plugin.define({
         if (event.decision.retry) event.decision.delay = 2_000
       })
     } catch (error) {
-      console.warn(`tier-router: retry hook unavailable, no fast fail: ${(error as Error)?.message ?? error}`)
+      trace.line(`tier-router: retry hook unavailable, no fast fail: ${(error as Error)?.message ?? error}`)
     }
 
-    console.info(
+    trace.line(
       `tier-router: consult and handoff ready, tiers ${order.join(" < ")}` +
-        ` (caller tier from the agent's model, price bands from the session's base model)`,
+        ` (caller tier from the agent's model, price bands from the session's base model)` +
+        (trace.path ? `; resolver trace in ${trace.path}` : ""),
     )
   },
 })
