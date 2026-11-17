@@ -119,4 +119,11 @@ config.plugins = plugins
 
 fs.writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`)
 console.log(`wired ${projectDir} into ${configPath}`)
+const reminder =
+  options.nudge === false ? 0 : typeof options.nudge === "number" && options.nudge > 0 ? options.nudge : 5
+console.log(
+  reminder > 0
+    ? `delegation reminder: on, after ${reminder} requests without a spawn`
+    : "delegation reminder: off",
+)
 NODE
