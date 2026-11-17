@@ -1,7 +1,8 @@
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs"
+import { mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs"
 import { Settings } from "../rpc.ts"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { fileURLToPath } from "node:url"
 import { Plugin } from "@opencode/plugin"
 
 import { createTrace, defaultTracePath } from "./trace.ts"
@@ -166,6 +167,19 @@ function loadRankings(trace: ReturnType<typeof createTrace>): Rankings {
   }
   trace.line("tier-router: rankings.json not readable, falling back to price percentiles")
   return { rank: {}, byKind: {} }
+}
+
+/**
+ * The mtime of this file, so the trace names the build that is actually loaded.
+ * A stale plugin and a queued message look identical from a notice, and this is
+ * the only way to tell them apart from the outside.
+ */
+function buildStamp(): string {
+  try {
+    return statSync(fileURLToPath(import.meta.url)).mtime.toISOString()
+  } catch {
+    return "unknown"
+  }
 }
 
 export default Plugin.define({
@@ -337,6 +351,10 @@ export default Plugin.define({
     const COOLDOWN_BASE_MS = 60_000
     const COOLDOWN_MAX_MS = 600_000
     const COOLDOWN_FORGET_MS = 3_600_000
+    /** A model that will not serve the account is not a minute-long problem. */
+    const GATE_COOLDOWN_MS = 6 * 3_600_000
+    /** How far above the base price a cheap tier may reach for its paid tail. */
+    const PAID_TAIL_RATIO = 2
 
     type Cooldown = { strikes: number; until: number; at: number }
 
@@ -353,7 +371,9 @@ export default Plugin.define({
       for (const [key, value] of Object.entries(raw)) {
         const until = Number(value?.until ?? 0)
         const at = Number(value?.at ?? until)
-        if (now - at > COOLDOWN_FORGET_MS) continue
+        // A window longer than the forget period is kept until it ends, so a
+        // gated model stays out for its hours instead of being pruned early.
+        if (until <= now && now - at > COOLDOWN_FORGET_MS) continue
         live[key] = { strikes: Number(value?.strikes ?? 1), until, at }
       }
       return live
@@ -371,15 +391,25 @@ export default Plugin.define({
     }
 
     /** Put a model out for a doubling wait, longer with every strike in a row. */
-    async function strike(key: string) {
+    async function strike(key: string, fixedMs?: number) {
       const live = await cooldowns()
       const strikes = Number(live[key]?.strikes ?? 0) + 1
-      const wait = Math.min(COOLDOWN_MAX_MS, COOLDOWN_BASE_MS * 2 ** (strikes - 1))
-      await ctx.storage.set("cooldown", {
-        ...live,
-        [key]: { strikes, until: Date.now() + wait, at: Date.now() },
-      })
-      trace.line(`tier-router: ${key} rate limited, out for ${Math.round(wait / 1000)}s (strike ${strikes})`)
+      // Three strikes is out. The doubling exists to ride out a short window, and
+      // a third refusal in a row says this is not a short window, so the model
+      // goes away for the same hours as one that will not serve the account at
+      // all. Without this it would be retried every ten minutes for as long as
+      // the process lives.
+      const wait =
+        fixedMs ??
+        (strikes >= 3 ? GATE_COOLDOWN_MS : Math.min(COOLDOWN_MAX_MS, COOLDOWN_BASE_MS * 2 ** (strikes - 1)))
+      const now = Date.now()
+      // A window never shortens. A model that refused on a setting and later
+      // answers a rate limit is still gated, so a minute must not replace the
+      // hours it was already out for.
+      const until = Math.max(Number(live[key]?.until ?? 0), now + wait)
+      await ctx.storage.set("cooldown", { ...live, [key]: { strikes, until, at: now } })
+      const kind = fixedMs === undefined ? "rate limited" : "refused"
+      trace.line(`tier-router: ${key} ${kind}, out for ${Math.round((until - now) / 1000)}s (strike ${strikes})`)
     }
 
     /** A reply clears the record, so a recovered model is tried at once. */
@@ -988,6 +1018,24 @@ export default Plugin.define({
     // agent the user chose for the session keeps the model they chose, which is
     // why this only serves sessions that have a parent.
     const pinned = new Map<string, string>()
+    /** Per session, the models that have already refused, so none is asked twice. */
+    const failed = new Map<string, Set<string>>()
+    /**
+     * A free-tier limit belongs to the provider, not to one model. Every free
+     * model on that provider draws on the same allowance, so when one is out the
+     * rest are too, and asking them spends a request to learn nothing.
+     */
+    async function strikeFreeTier(providerID: string, key: string) {
+      const models = await pool()
+      const served = models.find((candidate) => modelKey(candidate.ref) === key)
+      if (served && served.price === 0) await strike(`provider:${providerID}`)
+    }
+    /** Sessions with nothing left both untried and warm. */
+    const exhausted = new Set<string>()
+    /** Sessions that have already been told, so a walk of three models is one message. */
+    const announced = new Set<string>()
+    /** Whether the last resolve had to reach past the free models to a paid one. */
+    const paidServed = new Set<string>()
     const parented = new Map<string, boolean>()
     let poolAt = 0
     let poolCache: Candidate[] = []
@@ -1027,12 +1075,18 @@ export default Plugin.define({
      * the cooldowns it describes, so a plugin reload does not repeat a notice
      * the caller has already read.
      */
-    async function inform(sessionID: string, agent: string, key: string, attempt: number) {
+    async function inform(sessionID: string, agent: string, key: string, gaveUp: boolean) {
       try {
         const info = await ctx.session.get({ sessionID }).catch(() => undefined)
         const parent = info?.parentID
         if (!parent) return
         const now = Date.now()
+        // Only a give-up is worth a word. While the walk is still retrying the
+        // worker is alive and the caller has nothing to do, and a notice about a
+        // state that has moved on by the time it is delivered is worse than none.
+        if (!gaveUp) return
+        if (announced.has(sessionID)) return
+        announced.add(sessionID)
         const live = await cooldowns()
         const until = Math.max(live[key]?.until ?? 0, now + COOLDOWN_BASE_MS)
         const told = ((await ctx.storage.get("informed").catch(() => undefined)) ?? {}) as Record<string, number>
@@ -1044,17 +1098,16 @@ export default Plugin.define({
         }
         kept[slot] = until
         await ctx.storage.set("informed", kept)
-        const wait = Math.max(1, Math.round((until - now) / 1000))
+        const seconds = Math.max(1, Math.round((until - now) / 1000))
+        const span =
+          seconds >= 3600 ? `${Math.round(seconds / 3600)}h` : seconds >= 90 ? `${Math.round(seconds / 60)} min` : `${seconds}s`
         // The wording follows what the retry does. The first two attempts are
         // still running on another model, so the caller should wait for that
-        // worker rather than start the work itself.
+        // worker rather than start the work itself. Neutral about the cause,
+        // because a rate limit and a refusal read the same from here.
         const text =
-          attempt < 3
-            ? `${agent} hit a rate limit on ${key}, which is out for about ${wait}s. ` +
-              `The request is being retried on another model in the same tier, so wait for that worker ` +
-              `rather than doing the work yourself.`
-            : `${agent} hit a rate limit on ${key}, which is out for about ${wait}s. ` +
-              `The tier gave up after ${attempt} attempts, so spawn it again rather than doing the work yourself.`
+          `${agent} could not use ${key}, which is out for about ${span}, and the tier has no working model ` +
+          `left. Use swarm-worker-code or do the reading yourself.`
         await ctx.session.synthetic({
           sessionID: parent,
           description: "tier router: subagent rate limit",
@@ -1074,34 +1127,74 @@ export default Plugin.define({
         if (!(await isChild(event.sessionID))) return
         const models = await pool()
         if (models.length === 0) return
-        // The hook's contract is another model on the same provider, so only
-        // candidates on the provider already in play are offered.
-        const candidates = resolveCandidates(tiers[tierName], models, undefined, rankings.rank).filter(
-          (candidate) => candidate.ref.providerID === event.model.providerID,
-        )
+        // Two rules decide the order. Free before paid, so a paid model is used
+        // only once every free candidate has been tried or is out. Then the
+        // provider already in play before the rest, so the prompt cache stays
+        // warm while that provider still has something to offer. A cheap tier
+        // gets a paid tail; a tier that starts above zero is left as configured.
+        const spec = tiers[tierName]
+        const cheap = !spec.pick?.ratio || spec.pick.ratio[0] === 0
+        const ordered = resolveCandidates(spec, models, undefined, rankings.rank)
+        const reachable = cheap
+          ? resolveCandidates(
+              { ...spec, pick: { ...spec.pick, ratio: [0, PAID_TAIL_RATIO] } },
+              models,
+              undefined,
+              rankings.rank,
+            )
+          : ordered
+        const priceOf = new Map(models.map((model) => [modelKey(model), model.price]))
+        const from = event.model.providerID
+        // 0 free on this provider, 1 free elsewhere, 2 paid here, 3 paid anywhere.
+        const group = (candidate: Resolved) => {
+          const free = (priceOf.get(modelKey(candidate.ref)) ?? 1) === 0 ? 0 : 2
+          return free + (candidate.ref.providerID === from ? 0 : 1)
+        }
+        const candidates = [...reachable].sort((a, b) => group(a) - group(b))
         if (candidates.length === 0) return
         const live = await cooldowns()
         const nowMs = Date.now()
-        const cooling = (key: string) => (live[key]?.until ?? 0) > nowMs
-        const warm = candidates.filter((candidate) => !cooling(modelKey(candidate.ref)))
-        // Hold whatever this session was first served while it is still a
-        // candidate and still warm. Re-picking the top candidate on every
-        // request would cold-write the prefix whenever the model list reorders,
-        // which is the cost prompt caching exists to avoid.
+        const cooling = (key: string, providerID: string, price: number) =>
+          (live[key]?.until ?? 0) > nowMs ||
+          (price === 0 && (live[`provider:${providerID}`]?.until ?? 0) > nowMs)
+        // Every model this session has already failed on is out of the running,
+        // whether or not its cooldown has ended. A tier is a list of attempts:
+        // while an untried model remains, the failed one is not asked again.
+        const done = failed.get(event.sessionID) ?? new Set<string>()
+        failed.set(event.sessionID, done)
+        const untried = candidates.filter((candidate) => !done.has(modelKey(candidate.ref)))
+        const warm = untried.filter((candidate) =>
+          // An unknown price counts as paid, so the provider rule only ever
+          // widens the cooldown for models known to be free.
+          !cooling(
+            modelKey(candidate.ref),
+            candidate.ref.providerID,
+            priceOf.get(modelKey(candidate.ref)) ?? 1,
+          ),
+        )
+        if (warm.length === 0) {
+          // Nothing left that is both untried and reachable now, so another
+          // attempt would repeat a refusal the caller has already paid for.
+          exhausted.add(event.sessionID)
+          return
+        }
+        exhausted.delete(event.sessionID)
+        // Hold whatever this session was first served while it is still warm and
+        // untried. Re-picking the top candidate on every request would cold-write
+        // the prefix whenever the model list reorders, which is the cost prompt
+        // caching exists to avoid.
         const remembered = pinned.get(event.sessionID)
-        const held = remembered
-          ? candidates.find((candidate) => modelKey(candidate.ref) === remembered && !cooling(remembered))
-          : undefined
-        // When every candidate is cooling, the one that recovers soonest is
-        // still a better try than the one that just refused.
-        const pick =
-          held ??
-          warm[0] ??
-          candidates
-            .slice()
-            .sort((a, b) => (live[modelKey(a.ref)]?.until ?? 0) - (live[modelKey(b.ref)]?.until ?? 0))[0]
-        if (!pick) return
+        const held = remembered ? warm.find((candidate) => modelKey(candidate.ref) === remembered) : undefined
+        const pick = held ?? warm[0]
+        if (!pick) {
+          exhausted.add(event.sessionID)
+          return
+        }
         const key = modelKey(pick.ref)
+        if (cheap && (priceOf.get(key) ?? 0) > 0 && !paidServed.has(event.sessionID)) {
+          paidServed.add(event.sessionID)
+          trace.line(`tier-router: ${event.agent} had no free model left, served by paid ${key}`)
+        }
         // Sessions come and go, so the memory is bounded rather than growing
         // with the life of the process.
         if (pinned.size > 1000) pinned.clear()
@@ -1125,35 +1218,54 @@ export default Plugin.define({
     // with the conductor waiting behind it, which is long enough that delegating
     // looks broken. Fail the request instead: the next one picks another model.
     try {
-      await ctx.session.hook("retry", (event) => {
-        if (event.error.type !== "provider.rate-limit") return
+      await ctx.session.hook("retry", async (event) => {
+        // Two kinds of refusal are worth another model rather than another
+        // attempt at this one: a rate limit, and a model that will not serve
+        // this account at all. The second arrives as an ordinary provider error
+        // whose message names a setting, so the message is what is matched.
+        const limited = event.error.type === "provider.rate-limit"
+        const message = `${event.error.message ?? ""} ${(event.error as { response?: { body?: string } }).response?.body ?? ""}`
+        const gated =
+          /trains on request data|settings\/privacy|not enabled for this (account|model)|model unavailable/i.test(
+            message,
+          )
+        if (!limited && !gated) return
         if (agentTiers[String(event.agent)] !== "worker") return
-        // The model that just refused, so the resolve hook serves the next
-        // request from another candidate instead of the same one again.
-        void strike(modelKey(event.model))
-        // And the caller is told, so it retries with a working subagent instead
-        // of taking the reading over itself.
-        void inform(event.sessionID, String(event.agent), modelKey(event.model), event.attempt)
-        // Let the attempt happen instead of failing the worker. A retry is a new
-        // request, so the resolve hook runs again and the strike just recorded
-        // keeps this model out, which is what turns one refusal into a switch.
-        // Failing here gave the conductor a dead worker and no swap at all,
-        // because the worker died before it could make the second request.
-        if (event.attempt >= 3) {
-          event.decision = { retry: false }
-          return
-        }
-        // Short waits only. The point is to reach another model, not to sit out
-        // this one's window, so a long retryAfter is ignored; the third attempt
-        // gives up and hands back to the conductor.
-        if (event.decision.retry) event.decision.delay = event.attempt <= 1 ? 1_500 : 4_000
+        const key = modelKey(event.model)
+        // A model that will not serve the account will not serve it in a minute
+        // either, so it goes out for hours rather than doubling from a minute.
+        // Six hours is short enough that turning the setting on is noticed the
+        // same day and long enough that a session stops paying for the attempt.
+        // Awaited, not fired and forgotten. A reload while the write is in
+        // flight loses it, which showed as a strike that never reached storage
+        // and a provider key that was never written.
+        if (gated) await strike(key, GATE_COOLDOWN_MS)
+        else await strike(key)
+        // A free model's limit is the provider's free allowance, so it is
+        // recorded against the provider and every free model on it goes out.
+        if (limited) await strikeFreeTier(event.model.providerID, key)
+        // The model that just refused joins the ones this session will not ask
+        // again, so the next attempt moves forward instead of circling.
+        const done = failed.get(String(event.sessionID)) ?? new Set<string>()
+        failed.set(String(event.sessionID), done)
+        done.add(key)
+        // Another attempt is worth it only while the session has an untried
+        // model that is reachable now, which is what the last resolve recorded.
+        const giveUp = exhausted.has(String(event.sessionID)) || event.attempt >= 4
+        // Decide before speaking, so the notice describes what will happen.
+        await inform(event.sessionID, String(event.agent), key, giveUp)
+        // Assign the decision rather than adjust it: a rate limit arrives with
+        // retry already true and a plain provider error does not.
+        event.decision = giveUp
+          ? { retry: false }
+          : { retry: true, delay: event.attempt <= 1 ? 1_500 : 4_000 }
       })
     } catch (error) {
       trace.line(`tier-router: retry hook unavailable, no fast fail: ${(error as Error)?.message ?? error}`)
     }
 
     trace.line(
-      `tier-router: consult and handoff ready, tiers ${order.join(" < ")}` +
+      `tier-router: consult and handoff ready, build ${buildStamp()}, tiers ${order.join(" < ")}` +
         ` (caller tier from the agent's model, price bands from the session's base model)` +
         (trace.path ? `; resolver trace in ${trace.path}` : ""),
     )
