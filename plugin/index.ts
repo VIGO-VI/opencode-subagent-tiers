@@ -1109,7 +1109,14 @@ export default Plugin.define({
               `candidate(s): ${elsewhere.map((candidate) => modelKey(candidate.ref)).join(", ")}`,
           )
         }
-        const candidates = ordered.filter((candidate) => candidate.ref.providerID === event.model.providerID)
+        // Same provider first, because that is the hook's documented contract and
+        // it keeps the prompt cache warm. The rest are offered only after it, so a
+        // provider that still has something is never abandoned for another.
+        const from = event.model.providerID
+        const candidates = [
+          ...ordered.filter((candidate) => candidate.ref.providerID === from),
+          ...ordered.filter((candidate) => candidate.ref.providerID !== from),
+        ]
         if (candidates.length === 0) return
         const live = await cooldowns()
         const nowMs = Date.now()
