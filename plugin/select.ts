@@ -20,6 +20,8 @@ export type Candidate = {
   context?: number
   /** Rank derived for a local model when no measured score covers it. */
   derivedRank?: number
+  /** Soft bias for the placement preference, below 1 favours this candidate. */
+  bias?: number
 }
 
 export type Pick = {
@@ -184,7 +186,8 @@ export function pickCandidates(
     return index === -1 ? providerOrder.length : index
   }
 
-  const value = (entry: (typeof chosen)[number]) => quality(entry) / (1 + entry.model.price)
+  const value = (entry: (typeof chosen)[number]) =>
+    (entry.model.bias ?? 1) * (quality(entry) / (1 + entry.model.price))
 
   const sorted = [...chosen].sort((a, b) => {
     if (pick.prefer === "value") {
@@ -196,7 +199,7 @@ export function pickCandidates(
       return (
         freeA - freeB ||
         providerIndex(a) - providerIndex(b) ||
-        a.model.price - b.model.price ||
+        (a.model.price * (a.model.bias ?? 1)) - (b.model.price * (b.model.bias ?? 1)) ||
         quality(b) - quality(a) ||
         b.model.released - a.model.released
       )

@@ -1,4 +1,5 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs"
+import { Settings } from "../rpc.ts"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { Plugin } from "@opencode/plugin"
@@ -96,6 +97,16 @@ type Options = {
    * zero, most specific pattern wins.
    */
   pricing?: PricingTable
+  /**
+   * Which models may be used at all: `hybrid` (default) both, `cloud` excludes
+   * local providers, `local` excludes everything else.
+   */
+  mode?: "hybrid" | "cloud" | "local"
+  /**
+   * In hybrid, which side wins a close call. `value` (default) is price per
+   * point, `local` and `cloud` bias their side. Ignored in a single-side mode.
+   */
+  prefer?: "value" | "local" | "cloud"
 }
 
 const DEFAULT_BRIEF = `You are a senior engineer brought in for a second opinion.
@@ -285,6 +296,9 @@ export default Plugin.define({
         // A local model is compute-bound, not free. Give it a stand-in price and
         // rank so the same bands work without the user editing the tiers.
         const local = isLocalProvider(model.providerID)
+        const mode = settings.mode
+        if (mode === "cloud" && local) continue
+        if (mode === "local" && !local) continue
         list.push({
           ref: { providerID: model.providerID, id: model.id },
           id: model.id,
@@ -294,6 +308,11 @@ export default Plugin.define({
           context,
           released: Number(model.time?.released ?? 0),
           ...(local ? { derivedRank: inferLocalRank(model.id, context) } : {}),
+          // A preference only tilts ties; it never overrides the mode filter.
+          ...(mode === "hybrid" && settings.prefer === "local" && local ? { bias: 0.7 } : {}),
+          ...(mode === "hybrid" && settings.prefer === "cloud" && !local ? { bias: 0.7 } : {}),
+          ...(mode === "hybrid" && settings.prefer === "cloud" && local ? { bias: 1.4 } : {}),
+          ...(mode === "hybrid" && settings.prefer === "local" && !local ? { bias: 1.4 } : {}),
         })
       }
       return list
@@ -735,6 +754,35 @@ export default Plugin.define({
     const spawned = new Set<string>()
     const nudges = new Map<string, number>()
     const requests = new Map<string, number>()
+    // A value saved from the desktop panel wins over the config file, so the
+    // setting survives a restart without editing JSON.
+    const saved = ((await ctx.storage.get("settings").catch(() => undefined)) ?? {}) as {
+      mode?: string
+      prefer?: string
+    }
+    const settings = {
+      mode: (saved.mode ?? options.mode ?? "hybrid") as "hybrid" | "cloud" | "local",
+      prefer: (saved.prefer ?? options.prefer ?? "value") as "value" | "local" | "cloud",
+    }
+    try {
+      // The JSON Schema literal is portable at runtime; the promise helper types
+      // it as a local ValueSchema, hence the cast.
+      await ctx.rpc.register(Settings as never, {
+        get: async () => ({ ...settings }),
+        set: async (input) => {
+          const patch = input as { mode?: string; prefer?: string }
+          if (patch.mode === "hybrid" || patch.mode === "cloud" || patch.mode === "local") settings.mode = patch.mode
+          if (patch.prefer === "value" || patch.prefer === "local" || patch.prefer === "cloud") {
+            settings.prefer = patch.prefer
+          }
+          await ctx.storage.set("settings", { ...settings })
+          return { ...settings }
+        },
+      })
+    } catch (error) {
+      console.warn(`tier-router: settings rpc unavailable: ${(error as Error)?.message ?? error}`)
+    }
+
     const nudgeBudget = options.nudge === false ? 0 : typeof options.nudge === "number" ? options.nudge : 8
 
     if (nudgeBudget > 0) {

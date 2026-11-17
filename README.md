@@ -118,6 +118,21 @@ local copy of a family, because two cloud backends for one model are one fallbac
 between them while a local copy fails differently. `dedupe: false` keeps every
 copy.
 
+Two settings control placement, in the config or from the desktop panel:
+
+- `mode`: `hybrid` (default) uses local and cloud, `cloud` hides local
+  providers, `local` hides everything else.
+- `prefer`: `value` (default) compares rank per dollar, `local` and `cloud` bias
+  their side with a 0.7 multiplier on their own prices and 1.4 on the other's.
+  It is a tie-break, so it never overrides the mode filter, and it does nothing
+  in a single-side mode.
+
+Both appear in **Settings > Tier router**, each a button that cycles the value.
+The preference button is disabled unless the mode is hybrid, since a single-side
+mode has already decided. The panel writes through the plugin's RPC into plugin
+storage, so a change survives a restart without editing JSON, and the config keys
+remain the fallback.
+
 A hybrid setup needs no extra switch. Give the local models a pseudo-price, leave
 the cloud models at their list price, and both compete in the same bands with the
 same rank table. `allow` narrows a tier to chosen providers if a user wants, for
