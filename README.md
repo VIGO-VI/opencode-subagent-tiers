@@ -88,6 +88,25 @@ Two subagent levels is the working maximum, and one is the common case. Past
 that the tiers are running on models too weak to judge the work below them, so
 a deeper chain adds cost without adding an answer.
 
+### Sharing it with a local setup
+
+The repo works unchanged for someone running local models, but three things are
+theirs to decide, and install says so rather than guessing:
+
+1. Connect the local provider in OpenCode so its models appear in the catalog.
+   `opencode models` should list them before you install.
+2. Give those models a cost in `tiers.json` under `pricing`, or name them per
+   tier under `models`. Without either, every local model has price zero, every
+   band collapses into one, and the tiers stop meaning anything.
+3. Add a small `rank` block for their families if they want quality ordering
+   instead of the neutral default.
+
+Node 22.6 or newer is needed for the install step, because the model resolver
+reads `scripts/models.mjs` and that imports the TypeScript selection logic
+directly. If Node is missing, install prints a warning for every agent left
+without a model, since a model-less agent inherits the conductor's model, which
+is the opposite of what the plugin is for.
+
 A second config directory gets the same treatment, which is how the container
 install is made rather than hand-edited:
 

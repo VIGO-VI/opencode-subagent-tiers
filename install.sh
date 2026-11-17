@@ -14,7 +14,16 @@ config="$config_dir/opencode.json"
 # file carries a hand-pinned model that can go stale.
 if command -v node >/dev/null 2>&1; then
   node "$here/scripts/models.mjs" || echo "model refresh skipped, agent files keep their last model"
+else
+  echo "node not found: agent models were not refreshed"
 fi
+# An agent without a model inherits the conductor's, which is the opposite of
+# the point. Say so loudly rather than install quietly.
+for file in "$here"/agents/*.md; do
+  if ! grep -q "^model:" "$file"; then
+    echo "WARNING: $(basename "$file") has no model. Run node scripts/models.mjs with a server running."
+  fi
+done
 
 mkdir -p "$config_dir/agents"
 for file in "$here"/agents/*.md; do
