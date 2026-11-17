@@ -207,6 +207,8 @@ What makes an agent actually delegate, in order of strength:
    the user picks another agent.
 3. The `description` of each agent, which is what the model reads when it picks a
    subagent. They now say when to use each one rather than only what it is.
+   Descriptions stay model-free: `models.mjs` rewrites only the `model` line, so
+   a model named in a description goes stale at the next install.
 
 Without any of those, an agent can still spawn the workers, because the
 permission graph allows it. It just has no reason to.

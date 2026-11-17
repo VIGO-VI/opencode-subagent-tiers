@@ -101,8 +101,10 @@ const options = JSON.parse(fs.readFileSync(path.join(projectDir, "tiers.json"), 
 config.experimental = { ...(config.experimental ?? {}), subagent_depth: depth }
 
 // Run new sessions as the conductor and hand every session the delegation rules,
-// so a fresh session uses the workers without being told each time.
-config.default_agent = "build"
+// so a fresh session uses the workers without being told each time. The README
+// names the same agent in "What makes an agent actually delegate"; if this value
+// changes, that list changes with it.
+config.default_agent = "swarm-lead"
 const rules = `${projectDir}/AGENTS.md`
 const instructions = Array.isArray(config.instructions) ? config.instructions : []
 if (!instructions.includes(rules)) instructions.push(rules)
