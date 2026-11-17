@@ -987,7 +987,6 @@ export default Plugin.define({
     // limit is swapped for the next candidate rather than failing the task. The
     // agent the user chose for the session keeps the model they chose, which is
     // why this only serves sessions that have a parent.
-    const informed = new Map<string, number>()
     const pinned = new Map<string, string>()
     const parented = new Map<string, boolean>()
     let poolAt = 0
@@ -1020,24 +1019,47 @@ export default Plugin.define({
      * instead of doing the work itself. Once a minute per parent: a conductor
      * that fans out should not collect one notice per failed spawn.
      */
-    async function inform(sessionID: string, agent: string, key: string) {
+    /**
+     * Tell the caller that a subagent's model refused, so it does not take the
+     * work over itself. One notice per caller per model per outage: a second
+     * refusal inside the same window says nothing new, while a longer window
+     * after another strike is worth saying again. The record is stored beside
+     * the cooldowns it describes, so a plugin reload does not repeat a notice
+     * the caller has already read.
+     */
+    async function inform(sessionID: string, agent: string, key: string, attempt: number) {
       try {
         const info = await ctx.session.get({ sessionID }).catch(() => undefined)
         const parent = info?.parentID
         if (!parent) return
         const now = Date.now()
-        if (now - (informed.get(parent) ?? 0) < 60_000) return
-        informed.set(parent, now)
         const live = await cooldowns()
-        const wait = Math.max(1, Math.round((Math.max(live[key]?.until ?? 0, now + COOLDOWN_BASE_MS) - now) / 1000))
+        const until = Math.max(live[key]?.until ?? 0, now + COOLDOWN_BASE_MS)
+        const told = ((await ctx.storage.get("informed").catch(() => undefined)) ?? {}) as Record<string, number>
+        const slot = `${parent}|${key}`
+        if (Number(told[slot] ?? 0) >= until) return
+        const kept: Record<string, number> = {}
+        for (const [name, deadline] of Object.entries(told)) {
+          if (Number(deadline) > now) kept[name] = Number(deadline)
+        }
+        kept[slot] = until
+        await ctx.storage.set("informed", kept)
+        const wait = Math.max(1, Math.round((until - now) / 1000))
+        // The wording follows what the retry does. The first two attempts are
+        // still running on another model, so the caller should wait for that
+        // worker rather than start the work itself.
+        const text =
+          attempt < 3
+            ? `${agent} hit a rate limit on ${key}, which is out for about ${wait}s. ` +
+              `The request is being retried on another model in the same tier, so wait for that worker ` +
+              `rather than doing the work yourself.`
+            : `${agent} hit a rate limit on ${key}, which is out for about ${wait}s. ` +
+              `The tier gave up after ${attempt} attempts, so spawn it again rather than doing the work yourself.`
         await ctx.session.synthetic({
           sessionID: parent,
           description: "tier router: subagent rate limit",
           delivery: "queue",
-          text:
-            `${agent} hit a rate limit on ${key}, which is out for about ${wait}s. ` +
-            `The next request for ${agent} is served by another model on the same tier, so spawn it again ` +
-            `rather than doing that work yourself.`,
+          text,
         })
       } catch (error) {
         trace.line(`tier-router: could not tell the caller about a rate limit: ${(error as Error)?.message ?? error}`)
@@ -1111,13 +1133,20 @@ export default Plugin.define({
         void strike(modelKey(event.model))
         // And the caller is told, so it retries with a working subagent instead
         // of taking the reading over itself.
-        void inform(event.sessionID, String(event.agent), modelKey(event.model))
-        const longWait = (event.error.retryAfterMs ?? 0) > 10_000
-        if (event.attempt >= 2 || longWait) {
+        void inform(event.sessionID, String(event.agent), modelKey(event.model), event.attempt)
+        // Let the attempt happen instead of failing the worker. A retry is a new
+        // request, so the resolve hook runs again and the strike just recorded
+        // keeps this model out, which is what turns one refusal into a switch.
+        // Failing here gave the conductor a dead worker and no swap at all,
+        // because the worker died before it could make the second request.
+        if (event.attempt >= 3) {
           event.decision = { retry: false }
           return
         }
-        if (event.decision.retry) event.decision.delay = 2_000
+        // Short waits only. The point is to reach another model, not to sit out
+        // this one's window, so a long retryAfter is ignored; the third attempt
+        // gives up and hands back to the conductor.
+        if (event.decision.retry) event.decision.delay = event.attempt <= 1 ? 1_500 : 4_000
       })
     } catch (error) {
       trace.line(`tier-router: retry hook unavailable, no fast fail: ${(error as Error)?.message ?? error}`)
