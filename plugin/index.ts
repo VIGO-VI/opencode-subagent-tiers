@@ -72,9 +72,11 @@ type Options = {
   /** How long one consultant call may take before it is abandoned. */
   timeoutMs?: number
   /**
-   * Append one reminder line to the system prompt of a session that has not
-   * spawned anything yet. `true` or unset uses the default budget, a number sets
-   * how many requests get the line, `false` disables it.
+   * Append one reminder line to the system prompt when a session has made this
+   * many model requests without spawning a subagent. The line stays while the
+   * session keeps working alone and disappears as soon as a subagent runs.
+   * `true` or unset uses five requests, a number sets the interval, `false`
+   * disables it.
    */
   nudge?: boolean | number
   /**
@@ -751,9 +753,11 @@ export default Plugin.define({
         if (agentTiers[id] !== "worker") spawnable.add(id)
       }
     }
-    const spawned = new Set<string>()
-    const nudges = new Map<string, number>()
+    // Requests a session has made, and the request count at its last subagent
+    // call. The difference is how long it has been working alone.
     const requests = new Map<string, number>()
+    const spawnedAt = new Map<string, number>()
+    const reminding = new Set<string>()
     // A value saved from the desktop panel wins over the config file, so the
     // setting survives a restart without editing JSON.
     const saved = ((await ctx.storage.get("settings").catch(() => undefined)) ?? {}) as {
@@ -783,12 +787,19 @@ export default Plugin.define({
       console.warn(`tier-router: settings rpc unavailable: ${(error as Error)?.message ?? error}`)
     }
 
-    const nudgeBudget = options.nudge === false ? 0 : typeof options.nudge === "number" ? options.nudge : 8
+    // A session that delegates once and then drifts back to doing the reading
+    // itself needs the reminder again, so the interval is measured from the
+    // last spawn instead of from the session start, and there is no budget.
+    const nudgeEvery =
+      options.nudge === false ? 0 : typeof options.nudge === "number" && options.nudge > 0 ? options.nudge : 5
 
-    if (nudgeBudget > 0) {
+    if (nudgeEvery > 0) {
       try {
-        await ctx.tool.hook("execute.after", (event) => {
-          if (event.tool === "subagent") spawned.add(String(event.sessionID))
+        await ctx.tool.hook("execute.before", (event) => {
+          if (event.tool !== "subagent") return
+          const session = String(event.sessionID)
+          spawnedAt.set(session, requests.get(session) ?? 0)
+          reminding.delete(session)
         })
       } catch (error) {
         console.warn(`tier-router: tool hook unavailable, no nudge: ${(error as Error)?.message ?? error}`)
@@ -798,24 +809,27 @@ export default Plugin.define({
         await ctx.session.hook("context", (event) => {
           try {
             const session = String(event.sessionID)
-            if (spawned.has(session)) return
             const agent = String(event.agent)
             if (!spawnable.has(agent)) return
-            const used = nudges.get(session) ?? 0
-            if (used >= nudgeBudget) return
-            // Start on the second request, the way the vendor's own nudge waits
-            // for the executor to orient before reminding it.
             const seen = (requests.get(session) ?? 0) + 1
             requests.set(session, seen)
+            // Start on the second request, the way the vendor's own nudge waits
+            // for the executor to orient before reminding it.
             if (seen < 2) return
-            nudges.set(session, used + 1)
+            if (seen - (spawnedAt.get(session) ?? 0) < nudgeEvery) {
+              reminding.delete(session)
+              return
+            }
             event.system.push({
               type: "text",
               text:
                 "Delegation reminder: if this task needs more than one file read or shell call, " +
                 "spawn a swarm-worker for that reading now, before you start it. Workers run on a free model.",
             })
-            console.warn(`tier-router: nudge ${used + 1}/${nudgeBudget} for ${agent}`)
+            if (!reminding.has(session)) {
+              reminding.add(session)
+              console.warn(`tier-router: delegation reminder on for ${agent} after ${seen} requests without a spawn`)
+            }
           } catch {
             // A reminder must never break a request.
           }
@@ -823,6 +837,25 @@ export default Plugin.define({
       } catch (error) {
         console.warn(`tier-router: session hook unavailable, no nudge: ${(error as Error)?.message ?? error}`)
       }
+    }
+
+    // A rate-limited free worker would otherwise sit in a fifteen-minute
+    // backoff with the conductor waiting behind it, which is long enough that
+    // delegating looks broken. Fail the worker instead, so the conductor can
+    // escalate to swarm-worker-code or do the work itself.
+    try {
+      await ctx.session.hook("retry", (event) => {
+        if (event.error.type !== "provider.rate-limit") return
+        if (agentTiers[String(event.agent)] !== "worker") return
+        const longWait = (event.error.retryAfterMs ?? 0) > 10_000
+        if (event.attempt >= 2 || longWait) {
+          event.decision = { retry: false }
+          return
+        }
+        if (event.decision.retry) event.decision.delay = 2_000
+      })
+    } catch (error) {
+      console.warn(`tier-router: retry hook unavailable, no fast fail: ${(error as Error)?.message ?? error}`)
     }
 
     console.info(
