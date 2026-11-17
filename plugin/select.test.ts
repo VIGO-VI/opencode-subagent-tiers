@@ -3,6 +3,9 @@ import { test } from "node:test"
 
 import {
   applyPricing,
+  inferLocalPrice,
+  inferLocalRank,
+  isLocalProvider,
   budgetFor,
   confidence,
   blendedPrice,
@@ -317,6 +320,25 @@ test("a model without tools, or with too small a context, is not a candidate", (
   }
   const picked = pickCandidates(spec, mixed, "local/good", {})
   assert.deepEqual(picked.map((entry) => entry.ref.id), ["good"])
+})
+
+test("a local provider is recognised and given stand-in scores", () => {
+  assert.equal(isLocalProvider("ollama"), true)
+  assert.equal(isLocalProvider("lmstudio"), true)
+  assert.equal(isLocalProvider("opencode-go"), false)
+  assert.equal(inferLocalPrice("llama-3.1-70b", 128000), 2.8)
+  assert.ok(inferLocalPrice("mystery", 128000) > 0.1)
+  assert.ok(inferLocalRank("llama-3.1-70b") > inferLocalRank("qwen2.5-7b"))
+})
+
+test("a local model without a rank entry uses its derived rank", () => {
+  const local: Candidate[] = [
+    candidate("big-70b", 0, 400, "ollama", { tools: true, context: 32000, derivedRank: 75 }),
+    candidate("small-7b", 0, 390, "ollama", { tools: true, context: 32000, derivedRank: 43 }),
+  ]
+  const spec: TierSpec = { pick: { ratio: [0, 10], prefer: "quality", limit: 1, requireTools: true } }
+  const picked = pickCandidates(spec, local, "ollama/big-70b", {})
+  assert.equal(picked[0]!.ref.id, "big-70b")
 })
 
 test("a tier with no share and no cap is unbounded", () => {

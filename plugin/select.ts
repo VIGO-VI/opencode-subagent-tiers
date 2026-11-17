@@ -18,6 +18,8 @@ export type Candidate = {
   tools?: boolean
   /** Context window in tokens, so a small local model is not handed a big job. */
   context?: number
+  /** Rank derived for a local model when no measured score covers it. */
+  derivedRank?: number
 }
 
 export type Pick = {
@@ -156,7 +158,7 @@ export function pickCandidates(
 
   const scored = allowed.map((model) => {
     const ratio = anchorPrice > 0 ? model.price / anchorPrice : 0
-    return { model, ratio, rank: rankFor(table, model) }
+    return { model, ratio, rank: rankFor(table, model) ?? model.derivedRank }
   })
 
   const [min, max] = pick.ratio ?? [0, Number.POSITIVE_INFINITY]
@@ -362,4 +364,34 @@ export function confidence(report: string): Confidence {
   if (!/\b(uncertain|could not|not sure|unable to|cannot tell)\b/i.test(text)) score += 0.1
   else missing.push("the worker hedged")
   return { score: Math.min(1, Math.round(score * 100) / 100), missing }
+}
+
+/** Providers that serve models from the machine rather than a billing API. */
+export function isLocalProvider(providerID: string) {
+  return /(ollama|lm-?studio|llama|vllm|localai|local)/i.test(providerID)
+}
+
+/** Parameter count in billions, read from an id like `llama-3.1-70b`. */
+export function params(id: string) {
+  const match = id.match(/(\d+(?:\.\d+)?)\s*b(?![a-z0-9])/i)
+  const value = match ? Number(match[1]) : Number.NaN
+  return Number.isFinite(value) && value > 0 ? value : undefined
+}
+
+/**
+ * A stand-in price for a local model, so the price bands keep their meaning.
+ * Bigger models and bigger contexts occupy the machine longer. This is a
+ * heuristic, not a measurement: override it in `pricing` when it is wrong.
+ */
+export function inferLocalPrice(id: string, context = 0) {
+  const size = params(id)
+  if (size !== undefined) return Math.min(20, Math.round(size * 0.04 * 100) / 100)
+  return Math.min(20, Math.max(0.1, Math.round((context / 32000) * 0.5 * 100) / 100))
+}
+
+/** A capability stand-in on the same 0-100 scale as the measured table. */
+export function inferLocalRank(id: string, context = 0) {
+  const size = params(id)
+  if (size !== undefined) return Math.round(Math.min(85, 40 + size / 2))
+  return Math.round(Math.min(70, Math.max(30, 30 + context / 8000)))
 }

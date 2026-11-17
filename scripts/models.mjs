@@ -8,7 +8,13 @@ import { existsSync } from "node:fs"
 import { readFileSync, writeFileSync, readdirSync } from "node:fs"
 import { join, dirname } from "node:path"
 import { fileURLToPath } from "node:url"
-import { blendedPrice, resolveCandidates } from "../plugin/select.ts"
+import {
+  blendedPrice,
+  inferLocalPrice,
+  inferLocalRank,
+  isLocalProvider,
+  resolveCandidates,
+} from "../plugin/select.ts"
 
 const here = dirname(fileURLToPath(import.meta.url))
 const root = join(here, "..")
@@ -26,13 +32,21 @@ const catalog = JSON.parse(execFileSync(binary, ["api", "get", "/api/model"], { 
 
 const pool = catalog
   .filter((m) => m.enabled !== false)
-  .map((m) => ({
-    ref: { providerID: m.providerID, id: m.id },
-    id: m.id,
-    providerID: m.providerID,
-    price: blendedPrice(m.cost),
-    released: Number(m.time?.released ?? 0),
-  }))
+  .map((m) => {
+    const context = Number(m.limit?.context ?? 0)
+    const local = isLocalProvider(m.providerID)
+    const declared = blendedPrice(m.cost)
+    return {
+      ref: { providerID: m.providerID, id: m.id },
+      id: m.id,
+      providerID: m.providerID,
+      price: declared === 0 && local ? inferLocalPrice(m.id, context) : declared,
+      released: Number(m.time?.released ?? 0),
+      tools: m.capabilities?.tools !== false,
+      context,
+      derivedRank: local ? inferLocalRank(m.id, context) : undefined,
+    }
+  })
 
 const table = { ...(rankings.rank ?? {}) }
 const changed = []

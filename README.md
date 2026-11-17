@@ -95,9 +95,12 @@ theirs to decide, and install says so rather than guessing:
 
 1. Connect the local provider in OpenCode so its models appear in the catalog.
    `opencode models` should list them before you install.
-2. Give those models a cost in `tiers.json` under `pricing`, or name them per
-   tier under `models`. Without either, every local model has price zero, every
-   band collapses into one, and the tiers stop meaning anything.
+2. Nothing is required first. A provider whose id looks local (`ollama`,
+   `lmstudio`, `llama`, `vllm`, `localai`) is detected, and its models get a
+   stand-in price from their parameter count and a stand-in rank from their size,
+   so the bands keep working with no editing. Both are heuristics, not
+   measurements: override them in `pricing` or `rank` when they are wrong, or name
+   models per tier under `models`.
 3. Add a small `rank` block for their families if they want quality ordering
    instead of the neutral default.
 

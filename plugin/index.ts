@@ -7,6 +7,9 @@ import {
   applyPricing,
   budgetFor,
   confidence,
+  inferLocalPrice,
+  inferLocalRank,
+  isLocalProvider,
   blendedPrice,
   modelKey,
   parseModel,
@@ -277,14 +280,20 @@ export default Plugin.define({
       const list: Candidate[] = []
       for (const model of data) {
         if (model.enabled === false) continue
+        const context = Number(model.limit?.context ?? 0)
+        const declared = applyPricing(blendedPrice(model.cost), options.pricing, modelKey(model), model.id)
+        // A local model is compute-bound, not free. Give it a stand-in price and
+        // rank so the same bands work without the user editing the tiers.
+        const local = isLocalProvider(model.providerID)
         list.push({
           ref: { providerID: model.providerID, id: model.id },
           id: model.id,
           providerID: model.providerID,
-          price: applyPricing(blendedPrice(model.cost), options.pricing, modelKey(model), model.id),
+          price: declared === 0 && local ? inferLocalPrice(model.id, context) : declared,
           tools: model.capabilities?.tools !== false,
-          context: Number(model.limit?.context ?? 0),
+          context,
           released: Number(model.time?.released ?? 0),
+          ...(local ? { derivedRank: inferLocalRank(model.id, context) } : {}),
         })
       }
       return list
