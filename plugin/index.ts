@@ -353,6 +353,8 @@ export default Plugin.define({
     const COOLDOWN_FORGET_MS = 3_600_000
     /** A model that will not serve the account is not a minute-long problem. */
     const GATE_COOLDOWN_MS = 6 * 3_600_000
+    /** How far above the base price a cheap tier may reach for its paid tail. */
+    const PAID_TAIL_RATIO = 2
 
     type Cooldown = { strikes: number; until: number; at: number }
 
@@ -1032,8 +1034,8 @@ export default Plugin.define({
     const exhausted = new Set<string>()
     /** Sessions that have already been told, so a walk of three models is one message. */
     const announced = new Set<string>()
-    /** Sessions whose other-provider candidates have been named in the trace. */
-    const elsewhereSeen = new Set<string>()
+    /** Whether the last resolve had to reach past the free models to a paid one. */
+    const paidServed = new Set<string>()
     const parented = new Map<string, boolean>()
     let poolAt = 0
     let poolCache: Candidate[] = []
@@ -1125,27 +1127,30 @@ export default Plugin.define({
         if (!(await isChild(event.sessionID))) return
         const models = await pool()
         if (models.length === 0) return
-        // The hook's contract is another model on the same provider, so only
-        // candidates on the provider already in play are offered. What that
-        // filter discards is logged once per session, because whether a usable
-        // model sits behind it decides if the contract is worth testing.
-        const ordered = resolveCandidates(tiers[tierName], models, undefined, rankings.rank)
-        const elsewhere = ordered.filter((candidate) => candidate.ref.providerID !== event.model.providerID)
-        if (elsewhere.length > 0 && !elsewhereSeen.has(event.sessionID)) {
-          elsewhereSeen.add(event.sessionID)
-          trace.line(
-            `tier-router: ${event.agent} on ${event.model.providerID} had ${elsewhere.length} other-provider ` +
-              `candidate(s): ${elsewhere.map((candidate) => modelKey(candidate.ref)).join(", ")}`,
-          )
-        }
-        // Same provider first, because that is the hook's documented contract and
-        // it keeps the prompt cache warm. The rest are offered only after it, so a
-        // provider that still has something is never abandoned for another.
+        // Two rules decide the order. Free before paid, so a paid model is used
+        // only once every free candidate has been tried or is out. Then the
+        // provider already in play before the rest, so the prompt cache stays
+        // warm while that provider still has something to offer. A cheap tier
+        // gets a paid tail; a tier that starts above zero is left as configured.
+        const spec = tiers[tierName]
+        const cheap = !spec.pick?.ratio || spec.pick.ratio[0] === 0
+        const ordered = resolveCandidates(spec, models, undefined, rankings.rank)
+        const reachable = cheap
+          ? resolveCandidates(
+              { ...spec, pick: { ...spec.pick, ratio: [0, PAID_TAIL_RATIO] } },
+              models,
+              undefined,
+              rankings.rank,
+            )
+          : ordered
+        const priceOf = new Map(models.map((model) => [modelKey(model), model.price]))
         const from = event.model.providerID
-        const candidates = [
-          ...ordered.filter((candidate) => candidate.ref.providerID === from),
-          ...ordered.filter((candidate) => candidate.ref.providerID !== from),
-        ]
+        // 0 free on this provider, 1 free elsewhere, 2 paid here, 3 paid anywhere.
+        const group = (candidate: Resolved) => {
+          const free = (priceOf.get(modelKey(candidate.ref)) ?? 1) === 0 ? 0 : 2
+          return free + (candidate.ref.providerID === from ? 0 : 1)
+        }
+        const candidates = [...reachable].sort((a, b) => group(a) - group(b))
         if (candidates.length === 0) return
         const live = await cooldowns()
         const nowMs = Date.now()
@@ -1158,7 +1163,6 @@ export default Plugin.define({
         const done = failed.get(event.sessionID) ?? new Set<string>()
         failed.set(event.sessionID, done)
         const untried = candidates.filter((candidate) => !done.has(modelKey(candidate.ref)))
-        const priceOf = new Map(models.map((model) => [modelKey(model), model.price]))
         const warm = untried.filter((candidate) =>
           // An unknown price counts as paid, so the provider rule only ever
           // widens the cooldown for models known to be free.
@@ -1187,6 +1191,10 @@ export default Plugin.define({
           return
         }
         const key = modelKey(pick.ref)
+        if (cheap && (priceOf.get(key) ?? 0) > 0 && !paidServed.has(event.sessionID)) {
+          paidServed.add(event.sessionID)
+          trace.line(`tier-router: ${event.agent} had no free model left, served by paid ${key}`)
+        }
         // Sessions come and go, so the memory is bounded rather than growing
         // with the life of the process.
         if (pinned.size > 1000) pinned.clear()
