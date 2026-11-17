@@ -67,14 +67,34 @@ model on top, and does not need a fork.
 
 ## Install
 
+On a fresh machine, one command:
+
 ```sh
-~/Projects/opencode-subagent-tiers/install.sh
+~/Projects/opencode-subagent-tiers/setup.sh
 ```
 
-It copies the agents into `~/.config/opencode/agents/`, sets
-`experimental.subagent_depth` to 3, and adds the plugin entry with the tier
+When the repository is not there yet, clone it and run the same script:
+
+```sh
+git clone git@github.com:VIGO-VI/opencode-subagent-tiers.git ~/Projects/opencode-subagent-tiers
+~/Projects/opencode-subagent-tiers/setup.sh
+```
+
+`setup.sh` fetches the repository when it is missing and then runs
+`install.sh`. `install.sh` copies the agents into `~/.config/opencode/agents/`,
+sets `experimental.subagent_depth` to 3, and adds the plugin entry with the tier
 options from `tiers.json` to `~/.config/opencode/opencode.json`. It preserves
-every other key. Re-run it after editing `tiers.json`.
+every other key, prints the delegation reminder it wired, and is safe to re-run
+after editing `tiers.json`.
+
+The reminder arrives with the install. `nudge: 5` in `tiers.json` means a
+session that has made five requests since its last subagent call gets the
+sentence in its system prompt. Set another number there for a different
+interval, or `false` to turn it off. Without the tier options a plugin entry
+installed by hand still gets the default of five.
+
+`TIERS_DIR` overrides the checkout location and `TIERS_REMOTE` the clone URL.
+On Windows without WSL, run the two scripts from Git Bash.
 
 The runtime cap is a ceiling, not a target. The chain that actually happens is
 the permission graph: an agent can only spawn the agents its `subagent` rules
