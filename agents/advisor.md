@@ -1,5 +1,5 @@
 ---
-model: opencode/gemini-4-carbon
+model: opencode-go/qwen3.8-max
 description: Expensive reviewer for a decision that matters. Reads what it needs itself, answers one decision, never edits or delegates.
 mode: subagent
 steps: 10
