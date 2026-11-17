@@ -970,6 +970,7 @@ export default Plugin.define({
     // agent the user chose for the session keeps the model they chose, which is
     // why this only serves sessions that have a parent.
     const informed = new Map<string, number>()
+    const pinned = new Map<string, string>()
     const parented = new Map<string, boolean>()
     let poolAt = 0
     let poolCache: Candidate[] = []
@@ -1041,15 +1042,28 @@ export default Plugin.define({
         if (candidates.length === 0) return
         const live = await cooldowns()
         const warm = candidates.filter((candidate) => !live[modelKey(candidate.ref)])
+        // Hold whatever this session was first served while it is still a
+        // candidate and still warm. Re-picking the top candidate on every
+        // request would cold-write the prefix whenever the model list reorders,
+        // which is the cost prompt caching exists to avoid.
+        const remembered = pinned.get(event.sessionID)
+        const held = remembered
+          ? candidates.find((candidate) => modelKey(candidate.ref) === remembered && !live[remembered])
+          : undefined
         // When every candidate is cooling, the one that recovers soonest is
         // still a better try than the one that just refused.
         const pick =
+          held ??
           warm[0] ??
           candidates
             .slice()
             .sort((a, b) => (live[modelKey(a.ref)]?.until ?? 0) - (live[modelKey(b.ref)]?.until ?? 0))[0]
         if (!pick) return
         const key = modelKey(pick.ref)
+        // Sessions come and go, so the memory is bounded rather than growing
+        // with the life of the process.
+        if (pinned.size > 1000) pinned.clear()
+        pinned.set(event.sessionID, key)
         if (key !== modelKey(event.model)) {
           event.model = {
             providerID: pick.ref.providerID as typeof event.model.providerID,
