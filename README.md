@@ -352,8 +352,15 @@ consult can carry that one line and nothing else.
 - `models` is still accepted when you want to name a list. A `~family` entry
   resolves to the newest release of that family in the catalog.
 
-Resolution is logged by the server as `tier-router: <tier>/<kind> for base ...
--> ...` so a surprising pick is visible.
+Every resolution is recorded as `tier-router: <tier>/<kind> for base ... ->
+...`, so a surprising pick is visible. The line is appended to
+`$XDG_DATA_HOME/opencode/log/tier-router.log`, which is
+`~/.local/share/opencode/log/tier-router.log` unless `XDG_DATA_HOME` is set,
+beside the server's own log. It is also written to the console, but a server
+started by the desktop app runs with stdout on `/dev/null` and stderr on a
+socket the app owns, so the file is the copy that survives. `log` in the plugin
+options names another file, or `false` keeps it off disk. The file is capped at
+256 KB and rewritten to its last 128 KB, so it needs no rotation.
 
 ### Free fallback across providers
 
