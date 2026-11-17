@@ -1136,12 +1136,18 @@ export default Plugin.define({
         // gets a paid tail; a tier that starts above zero is left as configured.
         const spec = tiers[tierName]
         const cheap = !spec.pick?.ratio || spec.pick.ratio[0] === 0
-        const ordered = resolveCandidates(spec, models, undefined, rankings.rank)
+        // The band is priced against the session's own base model, the anchor a
+        // consult already uses. Without it the ratio has nothing to compare to,
+        // which left the paid tail reaching only the cheapest paid models.
+        const rootID = await rootSession(event.sessionID)
+        const rootInfo = await ctx.session.get({ sessionID: rootID }).catch(() => undefined)
+        const anchor = rootInfo?.model ? modelKey(rootInfo.model) : undefined
+        const ordered = resolveCandidates(spec, models, anchor, rankings.rank)
         const reachable = cheap
           ? resolveCandidates(
               { ...spec, pick: { ...spec.pick, ratio: [0, PAID_TAIL_RATIO] } },
               models,
-              undefined,
+              anchor,
               rankings.rank,
             )
           : ordered
