@@ -6,6 +6,7 @@ import { Plugin } from "@opencode/plugin"
 import {
   applyPricing,
   budgetFor,
+  confidence,
   blendedPrice,
   modelKey,
   parseModel,
@@ -78,6 +79,12 @@ type Options = {
    * by the child. `child` only returns it as the tool result, the old behaviour.
    */
   handoff?: { deliver?: "parent" | "child"; maxChars?: number }
+  /**
+   * Cascade gate: when a worker report scores below `minScore`, ask the next
+   * tier the same question and deliver both, the way a cascade escalates when
+   * the cheap answer fails its check.
+   */
+  cascade?: { enabled?: boolean; minScore?: number }
   /** Agent id to tier, for agents whose tier cannot be read from a model list. */
   agents?: Record<string, string>
   /**
@@ -544,6 +551,32 @@ export default Plugin.define({
           const caller = await callerOf(context)
           const target = resolveTier((args.tier ?? "").trim().toLowerCase(), caller.tier)
           const kind = (args.kind ?? "").trim().toLowerCase() || "general"
+          const gate = confidence(report)
+          let escalated: { tier: string; text: string; model: string } | undefined
+          if (
+            (options.cascade?.enabled ?? true) &&
+            gate.score < (options.cascade?.minScore ?? 0.5) &&
+            gate.missing.length > 0
+          ) {
+            const up = resolveTier("", caller.tier)
+            const escalation =
+              `A cheaper tier handed this back and it failed a check: ${gate.missing.join(", ")}.\n\n` +
+              `## Task\n${task.slice(0, 1200)}\n\n## Its report\n${report.slice(0, 2500)}\n\n` +
+              "Answer the task yourself, briefly, and name what the cheap report got wrong."
+            const reserved = estimateTokens(escalation) + 300
+            const slot = await reserve(context.sessionID, "consult", up, reserved, Number.POSITIVE_INFINITY)
+            const allowed = budgetFor(budgetSpec(up), await measuredTokens(context.sessionID), slot.spent, reserved)
+            if (allowed.allowed) {
+              try {
+                const answer = await ask(up, escalation, caller.base, kind === "general" ? undefined : kind)
+                escalated = { tier: up, text: answer.text, model: answer.model }
+                await charge(slot.ledgerKey, slot.ledger, up, slot.spent + estimateTokens(escalation, answer.text))
+              } catch {
+                escalated = undefined
+              }
+            }
+          }
+
           const deliverTo = options.handoff?.deliver ?? "parent"
           const deliverLimit = options.handoff?.maxChars ?? 8000
 
@@ -559,6 +592,9 @@ export default Plugin.define({
               `Task: ${task.slice(0, 400)}`,
               "",
               body,
+              escalated
+                ? `\n[escalated · ${escalated.tier} · ${escalated.model}]\n${escalated.text.slice(0, 3000)}`
+                : "",
               saved ? `\nSaved: ${saved}` : "",
             ].join("\n")
             try {

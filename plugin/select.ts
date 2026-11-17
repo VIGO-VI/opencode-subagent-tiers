@@ -23,8 +23,13 @@ export type Pick = {
   allow?: string[]
   /** Wildcards over `provider/model` and `model`, applied after `allow`. */
   deny?: string[]
-  /** `quality` sorts by rank then recency then price, `cost` sorts by price then rank. */
-  prefer?: "quality" | "cost"
+  /**
+   * `quality` sorts by rank then recency then price, `cost` by price then rank,
+   * `value` by rank per dollar, which is what a price-aware choice actually
+   * wants. `value` beats `quality` when two models are close in rank and far
+   * apart in price.
+   */
+  prefer?: "quality" | "cost" | "value"
   /** Coarse 0-100 scores keyed by wildcard. */
   rank?: Record<string, number>
   /** Provider ids to prefer, in order, when price and rank are otherwise equal. */
@@ -161,7 +166,12 @@ export function pickCandidates(
     return index === -1 ? providerOrder.length : index
   }
 
+  const value = (entry: (typeof chosen)[number]) => quality(entry) / (1 + entry.model.price)
+
   const sorted = [...chosen].sort((a, b) => {
+    if (pick.prefer === "value") {
+      return value(b) - value(a) || quality(b) - quality(a) || a.model.price - b.model.price
+    }
     if (pick.prefer === "cost") {
       const freeA = a.model.price === 0 ? 0 : 1
       const freeB = b.model.price === 0 ? 0 : 1
@@ -319,4 +329,27 @@ export function applyPricing(
     }
   }
   return best ? best.value : price
+}
+
+export type Confidence = { score: number; missing: string[] }
+
+/**
+ * A cheap check on a worker report, in the spirit of a cascade gate: decide
+ * whether the cheap answer is trustworthy enough to keep, or whether it should
+ * be escalated. It looks for the things a verifiable report has (a citation, a
+ * command and its output) and for the phrases that mean the worker gave up.
+ */
+export function confidence(report: string): Confidence {
+  const text = report.trim()
+  const missing: string[] = []
+  let score = 0
+  if (/\b[\w./-]+:\d+/.test(text)) score += 0.4
+  else missing.push("no file:line citation")
+  if (/[$>]\s*\S+.*\n/.test(text) || /exit\s*=?\s*\d/.test(text)) score += 0.3
+  else missing.push("no command output")
+  if (text.length >= 80) score += 0.2
+  else missing.push("shorter than one sentence of substance")
+  if (!/\b(uncertain|could not|not sure|unable to|cannot tell)\b/i.test(text)) score += 0.1
+  else missing.push("the worker hedged")
+  return { score: Math.min(1, Math.round(score * 100) / 100), missing }
 }

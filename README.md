@@ -124,6 +124,12 @@ permission graph allows it. It just has no reason to.
 
 | Agent | Model | Use |
 | --- | --- | --- |
+Agent files no longer name a model. `install.sh` runs `scripts/models.mjs`, which
+asks the running server for the catalog, applies the same tier policy the tools
+use, and writes the winning model into each agent's frontmatter. Re-running
+install refreshes every pick, and `node scripts/models.mjs --dry` shows what
+would change without touching a file.
+
 | `swarm-worker` | free flash | lookups, extraction, counting, cheap checks |
 | `swarm-worker-code` | cheap flash | tracing code, judging a diff, why a test fails; may split its own work to `swarm-worker` |
 | `swarm-lead` | cheap flash | splits work, holds at most three children, hands back with a skim |

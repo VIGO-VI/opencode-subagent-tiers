@@ -1,7 +1,7 @@
 ---
+model: opencode/gemini-4-carbon
 description: Expensive reviewer on DeepSeek V4 Pro. Reads what it needs, answers one decision, never edits or delegates.
 mode: subagent
-model: opencode-go/deepseek-v4-pro#high
 steps: 10
 permissions:
   - action: subagent

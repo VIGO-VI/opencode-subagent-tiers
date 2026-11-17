@@ -10,6 +10,12 @@ here=$(cd "$(dirname "$0")" && pwd)
 config_dir="${OPENCODE_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/opencode}"
 config="$config_dir/opencode.json"
 
+# Resolve each agent's model from the live catalog before copying, so no agent
+# file carries a hand-pinned model that can go stale.
+if command -v node >/dev/null 2>&1; then
+  node "$here/scripts/models.mjs" || echo "model refresh skipped, agent files keep their last model"
+fi
+
 mkdir -p "$config_dir/agents"
 for file in "$here"/agents/*.md; do
   cp "$file" "$config_dir/agents/$(basename "$file")"

@@ -4,6 +4,7 @@ import { test } from "node:test"
 import {
   applyPricing,
   budgetFor,
+  confidence,
   blendedPrice,
   matches,
   modelKey,
@@ -269,6 +270,34 @@ test("a declared price replaces the catalog price, most specific first", () => {
   assert.equal(applyPricing(0.75, { "anthropic/*": "free" }, "anthropic/x"), 0)
   assert.equal(applyPricing(0.75, { "*": 0.01, "opencode-go/*": 0.2 }, "opencode-go/x"), 0.2)
   assert.equal(applyPricing(0.75, { "opencode-go/*": 0.2, "*": 0.01 }, "other/x"), 0.01)
+})
+
+test("value preference buys rank per dollar", () => {
+  const pool2: Candidate[] = [
+    candidate("expensive-strong", 8, 100),
+    candidate("cheap-good", 0.8, 90),
+    candidate("free-weak", 0, 40),
+  ]
+  const table = { "expensive-strong": 90, "cheap-good": 85, "free-weak": 40 }
+  const spec: TierSpec = { pick: { ratio: [0, 20], prefer: "value", limit: 1 } }
+  const picked = pickCandidates(spec, pool2, "test/cheap-good", table)
+  // 85 / 1.8 beats 90 / 9 and beats 40 / 1
+  assert.equal(picked[0]!.ref.id, "cheap-good")
+})
+
+test("a report with evidence and no hedging scores high", () => {
+  const good = confidence(
+    "Answer: Pop unlocks at line 32.\nEvidence: queue.go:32 quotes q.mu.Unlock(), and the suite ran:\n$ go test ./...\nok  queue 0.02s\nGaps: none.",
+  )
+  assert.equal(good.score, 1)
+  assert.deepEqual(good.missing, [])
+})
+
+test("a hedging report without evidence scores low and names what is missing", () => {
+  const weak = confidence("Uncertain, I could not find it.")
+  assert.ok(weak.score < 0.2)
+  assert.ok(weak.missing.includes("no file:line citation"))
+  assert.ok(weak.missing.includes("the worker hedged"))
 })
 
 test("a tier with no share and no cap is unbounded", () => {
