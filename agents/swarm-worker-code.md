@@ -1,5 +1,5 @@
 ---
-model: console-openrouter/motif-technologies/motif-3
+model: console-openrouter/perceptron/perceptron-mk1.5
 description: Paid worker that reads code well. Escalate to it only when a swarm-worker report was not enough, or when a wrong answer would cost more than this worker does.
 mode: subagent
 steps: 16
