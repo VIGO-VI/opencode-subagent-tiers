@@ -997,6 +997,16 @@ export default Plugin.define({
     const pinned = new Map<string, string>()
     /** Per session, the models that have already refused, so none is asked twice. */
     const failed = new Map<string, Set<string>>()
+    /**
+     * A free-tier limit belongs to the provider, not to one model. Every free
+     * model on that provider draws on the same allowance, so when one is out the
+     * rest are too, and asking them spends a request to learn nothing.
+     */
+    async function strikeFreeTier(providerID: string, key: string) {
+      const models = await pool()
+      const served = models.find((candidate) => modelKey(candidate.ref) === key)
+      if (served && served.price === 0) await strike(`provider:${providerID}`)
+    }
     /** Sessions with nothing left both untried and warm. */
     const exhausted = new Set<string>()
     /** Sessions that have already been told, so a walk of three models is one message. */
@@ -1120,14 +1130,25 @@ export default Plugin.define({
         if (candidates.length === 0) return
         const live = await cooldowns()
         const nowMs = Date.now()
-        const cooling = (key: string) => (live[key]?.until ?? 0) > nowMs
+        const cooling = (key: string, providerID: string, price: number) =>
+          (live[key]?.until ?? 0) > nowMs ||
+          (price === 0 && (live[`provider:${providerID}`]?.until ?? 0) > nowMs)
         // Every model this session has already failed on is out of the running,
         // whether or not its cooldown has ended. A tier is a list of attempts:
         // while an untried model remains, the failed one is not asked again.
         const done = failed.get(event.sessionID) ?? new Set<string>()
         failed.set(event.sessionID, done)
         const untried = candidates.filter((candidate) => !done.has(modelKey(candidate.ref)))
-        const warm = untried.filter((candidate) => !cooling(modelKey(candidate.ref)))
+        const priceOf = new Map(models.map((model) => [modelKey(model), model.price]))
+        const warm = untried.filter((candidate) =>
+          // An unknown price counts as paid, so the provider rule only ever
+          // widens the cooldown for models known to be free.
+          !cooling(
+            modelKey(candidate.ref),
+            candidate.ref.providerID,
+            priceOf.get(modelKey(candidate.ref)) ?? 1,
+          ),
+        )
         if (warm.length === 0) {
           // Nothing left that is both untried and reachable now, so another
           // attempt would repeat a refusal the caller has already paid for.
@@ -1190,6 +1211,9 @@ export default Plugin.define({
         // same day and long enough that a session stops paying for the attempt.
         if (gated) void strike(key, GATE_COOLDOWN_MS)
         else void strike(key)
+        // A free model's limit is the provider's free allowance, so it is
+        // recorded against the provider and every free model on it goes out.
+        if (limited) void strikeFreeTier(event.model.providerID, key)
         // The model that just refused joins the ones this session will not ask
         // again, so the next attempt moves forward instead of circling.
         const done = failed.get(String(event.sessionID)) ?? new Set<string>()
