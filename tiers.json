@@ -75,7 +75,7 @@
           1.4
         ],
         "prefer": "quality",
-        "limit": 3,
+        "limit": 5,
         "byKind": {
           "lookup": {
             "prefer": "cost",
@@ -110,7 +110,7 @@
           12
         ],
         "prefer": "quality",
-        "limit": 3,
+        "limit": 8,
         "deny": [
           "*router*",
           "*pareto*"
