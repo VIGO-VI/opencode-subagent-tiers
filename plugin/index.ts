@@ -1268,7 +1268,12 @@ export default Plugin.define({
         done.add(key)
         // Another attempt is worth it only while the session has an untried
         // model that is reachable now, which is what the last resolve recorded.
-        const giveUp = exhausted.has(String(event.sessionID)) || event.attempt >= 4
+        // Only an empty tier stops the walk. A cap on attempts used to be here, and
+        // it gave up after four, which is fewer than the candidate list is long:
+        // two gated models in front of a working one were enough to lose the task.
+        // The failed set already limits each model to one attempt, so the walk
+        // ends on its own when there is nothing untried left.
+        const giveUp = exhausted.has(String(event.sessionID))
         // Decide before speaking, so the notice describes what will happen.
         await inform(event.sessionID, String(event.agent), key, giveUp)
         // Assign the decision rather than adjust it: a rate limit arrives with
