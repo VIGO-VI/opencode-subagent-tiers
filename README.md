@@ -221,6 +221,17 @@ use, and writes the winning model into each agent's frontmatter. Re-running
 install refreshes every pick, and `node scripts/models.mjs --dry` shows what
 would change without touching a file.
 
+A pick is probed before it is written. `scripts/models.mjs` asks the running
+server for one short answer from the chosen model and falls through to the next
+candidate when the answer is a permanent refusal: an endpoint the account's data
+policy excludes, a model the provider withdrew, a provider the account holds no
+credit for, or a capability the model lacks. A rate limit or a timeout does not
+move the pick, because it says nothing about whether the model works; that
+candidate is written and marked `unverified`. When no candidate answers, the
+agent's model line is left alone and every reason is printed, so an install
+cannot silently ship an agent that never replies. `--no-probe`, or
+`TIER_PROBE=0`, skips the check for an offline install.
+
 | `swarm-worker` | free flash | lookups, extraction, counting, cheap checks |
 | `swarm-worker-code` | cheap flash | tracing code, judging a diff, why a test fails; may split its own work to `swarm-worker` |
 | `swarm-lead` | cheap flash | splits work, holds at most three children, hands back with a skim |
