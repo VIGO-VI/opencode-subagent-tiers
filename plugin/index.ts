@@ -1036,6 +1036,8 @@ export default Plugin.define({
     const announced = new Set<string>()
     /** Whether the last resolve had to reach past the free models to a paid one. */
     const paidServed = new Set<string>()
+    /** Sessions whose ordered candidate list has been written to the trace. */
+    const orderSeen = new Set<string>()
     const parented = new Map<string, boolean>()
     let poolAt = 0
     let poolCache: Candidate[] = []
@@ -1152,6 +1154,15 @@ export default Plugin.define({
         }
         const candidates = [...reachable].sort((a, b) => group(a) - group(b))
         if (candidates.length === 0) return
+        if (!orderSeen.has(event.sessionID)) {
+          orderSeen.add(event.sessionID)
+          trace.line(
+            `tier-router: ${event.agent} order ${candidates
+              .slice(0, 8)
+              .map((candidate) => `${group(candidate)}:${modelKey(candidate.ref)}`)
+              .join(" ")}`,
+          )
+        }
         const live = await cooldowns()
         const nowMs = Date.now()
         const cooling = (key: string, providerID: string, price: number) =>
