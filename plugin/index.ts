@@ -379,12 +379,14 @@ export default Plugin.define({
       const live = await cooldowns()
       const strikes = Number(live[key]?.strikes ?? 0) + 1
       const wait = fixedMs ?? Math.min(COOLDOWN_MAX_MS, COOLDOWN_BASE_MS * 2 ** (strikes - 1))
-      await ctx.storage.set("cooldown", {
-        ...live,
-        [key]: { strikes, until: Date.now() + wait, at: Date.now() },
-      })
+      const now = Date.now()
+      // A window never shortens. A model that refused on a setting and later
+      // answers a rate limit is still gated, so a minute must not replace the
+      // hours it was already out for.
+      const until = Math.max(Number(live[key]?.until ?? 0), now + wait)
+      await ctx.storage.set("cooldown", { ...live, [key]: { strikes, until, at: now } })
       const kind = fixedMs === undefined ? "rate limited" : "refused"
-      trace.line(`tier-router: ${key} ${kind}, out for ${Math.round(wait / 1000)}s (strike ${strikes})`)
+      trace.line(`tier-router: ${key} ${kind}, out for ${Math.round((until - now) / 1000)}s (strike ${strikes})`)
     }
 
     /** A reply clears the record, so a recovered model is tried at once. */
@@ -997,6 +999,8 @@ export default Plugin.define({
     const failed = new Map<string, Set<string>>()
     /** Sessions with nothing left both untried and warm. */
     const exhausted = new Set<string>()
+    /** Sessions that have already been told, so a walk of three models is one message. */
+    const announced = new Set<string>()
     const parented = new Map<string, boolean>()
     let poolAt = 0
     let poolCache: Candidate[] = []
@@ -1042,6 +1046,11 @@ export default Plugin.define({
         const parent = info?.parentID
         if (!parent) return
         const now = Date.now()
+        // The first failure of a walk is worth a word. The rest are not, because
+        // the walk is automatic and the caller only has to not take over. A
+        // give-up is always worth a word, since it changes what to do next.
+        if (!gaveUp && announced.has(sessionID)) return
+        announced.add(sessionID)
         const live = await cooldowns()
         const until = Math.max(live[key]?.until ?? 0, now + COOLDOWN_BASE_MS)
         const told = ((await ctx.storage.get("informed").catch(() => undefined)) ?? {}) as Record<string, number>
