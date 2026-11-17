@@ -1065,10 +1065,11 @@ export default Plugin.define({
         const parent = info?.parentID
         if (!parent) return
         const now = Date.now()
-        // The first failure of a walk is worth a word. The rest are not, because
-        // the walk is automatic and the caller only has to not take over. A
-        // give-up is always worth a word, since it changes what to do next.
-        if (!gaveUp && announced.has(sessionID)) return
+        // Only a give-up is worth a word. While the walk is still retrying the
+        // worker is alive and the caller has nothing to do, and a notice about a
+        // state that has moved on by the time it is delivered is worse than none.
+        if (!gaveUp) return
+        if (announced.has(sessionID)) return
         announced.add(sessionID)
         const live = await cooldowns()
         const until = Math.max(live[key]?.until ?? 0, now + COOLDOWN_BASE_MS)
@@ -1088,12 +1089,9 @@ export default Plugin.define({
         // still running on another model, so the caller should wait for that
         // worker rather than start the work itself. Neutral about the cause,
         // because a rate limit and a refusal read the same from here.
-        const text = gaveUp
-          ? `${agent} could not use ${key}, which is out for about ${span}, and the tier has no working model ` +
-            `left. Use swarm-worker-code or do the reading yourself.`
-          : `${agent} could not use ${key}, which is out for about ${span}. ` +
-            `The request is being retried on another model in the same tier, so wait for that worker ` +
-            `rather than doing the work yourself.`
+        const text =
+          `${agent} could not use ${key}, which is out for about ${span}, and the tier has no working model ` +
+          `left. Use swarm-worker-code or do the reading yourself.`
         await ctx.session.synthetic({
           sessionID: parent,
           description: "tier router: subagent rate limit",
