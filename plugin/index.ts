@@ -299,6 +299,60 @@ export default Plugin.define({
       await ctx.storage.set(ledgerKey, { ...ledger, [tier]: total })
     }
 
+    /**
+     * How long a model stays out after a rate limit, mirroring the exponential
+     * backoff the runner already uses for a failed request, but per model and
+     * across requests. One strike is a minute, then two, four, eight, and it
+     * stops doubling at ten. A success clears the strikes, so a provider that
+     * recovers is used again straight away.
+     */
+    const COOLDOWN_BASE_MS = 60_000
+    const COOLDOWN_MAX_MS = 600_000
+
+    type Cooldown = { strikes: number; until: number }
+
+    /** Every model still cooling, with expired entries dropped. */
+    async function cooldowns(): Promise<Record<string, Cooldown>> {
+      const raw = ((await ctx.storage.get("cooldown").catch(() => undefined)) ?? {}) as Record<string, Cooldown>
+      const now = Date.now()
+      const live: Record<string, Cooldown> = {}
+      for (const [key, value] of Object.entries(raw)) {
+        const until = Number(value?.until ?? 0)
+        if (until > now) live[key] = { strikes: Number(value?.strikes ?? 1), until }
+      }
+      return live
+    }
+
+    async function coolingKeys(): Promise<Set<string>> {
+      return new Set(Object.keys(await cooldowns()))
+    }
+
+    /** Put a model out for a doubling wait, longer with every strike in a row. */
+    async function strike(key: string) {
+      const live = await cooldowns()
+      const strikes = Number(live[key]?.strikes ?? 0) + 1
+      const wait = Math.min(COOLDOWN_MAX_MS, COOLDOWN_BASE_MS * 2 ** (strikes - 1))
+      await ctx.storage.set("cooldown", { ...live, [key]: { strikes, until: Date.now() + wait } })
+      trace.line(`tier-router: ${key} rate limited, out for ${Math.round(wait / 1000)}s (strike ${strikes})`)
+    }
+
+    /** A reply clears the record, so a recovered model is tried at once. */
+    async function forgive(key: string) {
+      const live = await cooldowns()
+      if (!live[key]) return
+      delete live[key]
+      await ctx.storage.set("cooldown", live)
+    }
+
+    /** A rate limit arrives as a status code or as prose, depending on the provider. */
+    function isRateLimit(error: unknown): boolean {
+      const status = Number((error as { status?: number })?.status ?? 0)
+      if (status === 429) return true
+      const body = (error as { response?: { body?: string } })?.response?.body ?? ""
+      const text = `${(error as Error)?.message ?? ""} ${body} ${String(error ?? "")}`
+      return /429|rate.?limit|too many requests|quota/i.test(text)
+    }
+
     async function catalogue(): Promise<Candidate[]> {
       const { data } = await ctx.model.list()
       const list: Candidate[] = []
@@ -350,12 +404,20 @@ export default Plugin.define({
           candidates.map((candidate) => candidate.note).join(" | "),
       )
       const available = new Set(pool.map((model) => modelKey(model)))
+      // A cooling model answers with the same 429 it gave last time, so it goes
+      // to the back of the walk. The list is reordered, never shortened: when
+      // every model is cooling, the soonest to recover is still the best try,
+      // and a paid model in the band is reached before a free one that is out.
+      const cooling = await coolingKeys()
+      const warm = candidates.filter((candidate) => !cooling.has(modelKey(candidate.ref)))
+      const cold = candidates.filter((candidate) => cooling.has(modelKey(candidate.ref)))
+      const walk = warm.length > 0 ? [...warm, ...cold] : cold
       const failures: string[] = []
       // The budget covers the whole walk, not each candidate. A tier is a
       // fallback list now, and a list that can spend its timeout once per entry
       // turns one slow provider into a consult that never returns.
       const deadline = Date.now() + budgetMs
-      for (const candidate of candidates) {
+      for (const candidate of walk) {
         const remaining = deadline - Date.now()
         if (remaining <= 0) {
           failures.push(`${modelKey(candidate.ref)}: not tried, the call budget ran out`)
@@ -376,9 +438,12 @@ export default Plugin.define({
             failures.push(`${modelKey(candidate.ref)}: empty reply`)
             continue
           }
+          await forgive(modelKey(candidate.ref))
           return { text, model: modelKey(candidate.ref), note: candidate.note }
         } catch (error) {
-          failures.push(`${modelKey(candidate.ref)}: ${(error as Error)?.message ?? String(error)}`)
+          const key = modelKey(candidate.ref)
+          if (isRateLimit(error)) await strike(key)
+          failures.push(`${key}: ${(error as Error)?.message ?? String(error)}`)
         }
       }
       throw new Error(`every model in tier "${tierName}" failed.\n${failures.join("\n")}`)
@@ -859,14 +924,90 @@ export default Plugin.define({
       }
     }
 
-    // A rate-limited free worker would otherwise sit in a fifteen-minute
-    // backoff with the conductor waiting behind it, which is long enough that
-    // delegating looks broken. Fail the worker instead, so the conductor can
-    // escalate to swarm-worker-code or do the work itself.
+    // A subagent takes its model from its tier on every request instead of
+    // carrying a fixed one in its own file, so a model that answers with a rate
+    // limit is swapped for the next candidate rather than failing the task. The
+    // agent the user chose for the session keeps the model they chose, which is
+    // why this only serves sessions that have a parent.
+    const chosen = new Map<string, string>()
+    const parented = new Map<string, boolean>()
+    let poolAt = 0
+    let poolCache: Candidate[] = []
+
+    /** The model list, shared for a minute so a per-request hook stays cheap. */
+    async function pool(): Promise<Candidate[]> {
+      const now = Date.now()
+      if (poolCache.length > 0 && now - poolAt < 60_000) return poolCache
+      const list = await catalogue().catch(() => [])
+      if (list.length > 0) {
+        poolCache = list
+        poolAt = now
+      }
+      return poolCache
+    }
+
+    /** A session with a parent is a subagent. The root one is the user's own. */
+    async function isChild(sessionID: string): Promise<boolean> {
+      const known = parented.get(sessionID)
+      if (known !== undefined) return known
+      const info = await ctx.session.get({ sessionID }).catch(() => undefined)
+      const child = Boolean(info?.parentID)
+      parented.set(sessionID, child)
+      return child
+    }
+
+    try {
+      await ctx.session.hook("experimental.model.resolve", async (event) => {
+        const tierName = agentTiers[String(event.agent)]
+        if (!tierName || !tiers[tierName]) return
+        if (event.kind !== "primary") return
+        if (!(await isChild(event.sessionID))) return
+        const models = await pool()
+        if (models.length === 0) return
+        // The hook's contract is another model on the same provider, so only
+        // candidates on the provider already in play are offered.
+        const candidates = resolveCandidates(tiers[tierName], models, undefined, rankings.rank).filter(
+          (candidate) => candidate.ref.providerID === event.model.providerID,
+        )
+        if (candidates.length === 0) return
+        const live = await cooldowns()
+        const warm = candidates.filter((candidate) => !live[modelKey(candidate.ref)])
+        // When every candidate is cooling, the one that recovers soonest is
+        // still a better try than the one that just refused.
+        const pick =
+          warm[0] ??
+          candidates
+            .slice()
+            .sort((a, b) => (live[modelKey(a.ref)]?.until ?? 0) - (live[modelKey(b.ref)]?.until ?? 0))[0]
+        if (!pick) return
+        const key = modelKey(pick.ref)
+        chosen.set(String(event.agent), key)
+        if (key !== modelKey(event.model)) {
+          event.model = {
+            providerID: pick.ref.providerID as typeof event.model.providerID,
+            id: pick.ref.id as typeof event.model.id,
+          }
+          trace.line(`tier-router: ${event.agent} served by ${key} for ${tierName}`)
+        }
+      })
+    } catch (error) {
+      trace.line(
+        `tier-router: model resolve hook unavailable, subagents keep the model in their file: ` +
+          `${(error as Error)?.message ?? error}`,
+      )
+    }
+
+    // A rate-limited worker would otherwise sit in a fifteen-minute backoff
+    // with the conductor waiting behind it, which is long enough that delegating
+    // looks broken. Fail the request instead: the next one picks another model.
     try {
       await ctx.session.hook("retry", (event) => {
         if (event.error.type !== "provider.rate-limit") return
         if (agentTiers[String(event.agent)] !== "worker") return
+        // The model that just refused, so the resolve hook serves the next
+        // request from another candidate instead of the same one again. An
+        // agent name is the fallback key when no request has been seen yet.
+        void strike(chosen.get(String(event.agent)) ?? `agent:${event.agent}`)
         const longWait = (event.error.retryAfterMs ?? 0) > 10_000
         if (event.attempt >= 2 || longWait) {
           event.decision = { retry: false }
