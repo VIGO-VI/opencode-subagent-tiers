@@ -439,14 +439,26 @@ export default Plugin.define({
             continue
           }
           await forgive(modelKey(candidate.ref))
-          return { text, model: modelKey(candidate.ref), note: candidate.note }
+          // Name the shift when the walk had to skip a cooling model, so the
+          // caller reads the reply as a tier that moved and not as a special one.
+          const lead =
+            cold.length > 0
+              ? `[tier-router: ${cold.map((item) => modelKey(item.ref)).join(", ")} cooling, ` +
+                `served by ${modelKey(candidate.ref)}]\n`
+              : ""
+          return { text: lead + text, model: modelKey(candidate.ref), note: candidate.note }
         } catch (error) {
           const key = modelKey(candidate.ref)
           if (isRateLimit(error)) await strike(key)
           failures.push(`${key}: ${(error as Error)?.message ?? String(error)}`)
         }
       }
-      throw new Error(`every model in tier "${tierName}" failed.\n${failures.join("\n")}`)
+      const coolingNote =
+        cold.length > 0
+          ? `\nCooling: ${cold.map((item) => modelKey(item.ref)).join(", ")}.` +
+            " They recover on their own, so ask again rather than answering the question yourself."
+          : ""
+      throw new Error(`every model in tier "${tierName}" failed.\n${failures.join("\n")}${coolingNote}`)
     }
 
     async function callerOf(context: { agent: string; sessionID: string }) {
@@ -929,7 +941,7 @@ export default Plugin.define({
     // limit is swapped for the next candidate rather than failing the task. The
     // agent the user chose for the session keeps the model they chose, which is
     // why this only serves sessions that have a parent.
-    const chosen = new Map<string, string>()
+    const informed = new Map<string, number>()
     const parented = new Map<string, boolean>()
     let poolAt = 0
     let poolCache: Candidate[] = []
@@ -954,6 +966,35 @@ export default Plugin.define({
       const child = Boolean(info?.parentID)
       parented.set(sessionID, child)
       return child
+    }
+
+    /**
+     * Tell the caller that a subagent's model refused, so it spawns again
+     * instead of doing the work itself. Once a minute per parent: a conductor
+     * that fans out should not collect one notice per failed spawn.
+     */
+    async function inform(sessionID: string, agent: string, key: string) {
+      try {
+        const info = await ctx.session.get({ sessionID }).catch(() => undefined)
+        const parent = info?.parentID
+        if (!parent) return
+        const now = Date.now()
+        if (now - (informed.get(parent) ?? 0) < 60_000) return
+        informed.set(parent, now)
+        const live = await cooldowns()
+        const wait = Math.max(1, Math.round(((live[key]?.until ?? now + COOLDOWN_BASE_MS) - now) / 1000))
+        await ctx.session.synthetic({
+          sessionID: parent,
+          description: "tier router: subagent rate limit",
+          delivery: "queue",
+          text:
+            `${agent} hit a rate limit on ${key}, which is out for about ${wait}s. ` +
+            `The next request for ${agent} is served by another model on the same tier, so spawn it again ` +
+            `rather than doing that work yourself.`,
+        })
+      } catch (error) {
+        trace.line(`tier-router: could not tell the caller about a rate limit: ${(error as Error)?.message ?? error}`)
+      }
     }
 
     try {
@@ -981,7 +1022,6 @@ export default Plugin.define({
             .sort((a, b) => (live[modelKey(a.ref)]?.until ?? 0) - (live[modelKey(b.ref)]?.until ?? 0))[0]
         if (!pick) return
         const key = modelKey(pick.ref)
-        chosen.set(String(event.agent), key)
         if (key !== modelKey(event.model)) {
           event.model = {
             providerID: pick.ref.providerID as typeof event.model.providerID,
@@ -1005,9 +1045,11 @@ export default Plugin.define({
         if (event.error.type !== "provider.rate-limit") return
         if (agentTiers[String(event.agent)] !== "worker") return
         // The model that just refused, so the resolve hook serves the next
-        // request from another candidate instead of the same one again. An
-        // agent name is the fallback key when no request has been seen yet.
-        void strike(chosen.get(String(event.agent)) ?? `agent:${event.agent}`)
+        // request from another candidate instead of the same one again.
+        void strike(modelKey(event.model))
+        // And the caller is told, so it retries with a working subagent instead
+        // of taking the reading over itself.
+        void inform(event.sessionID, String(event.agent), modelKey(event.model))
         const longWait = (event.error.retryAfterMs ?? 0) > 10_000
         if (event.attempt >= 2 || longWait) {
           event.decision = { retry: false }
