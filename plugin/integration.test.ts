@@ -1,0 +1,538 @@
+import assert from "node:assert/strict"
+import { test } from "node:test"
+
+import plugin from "./index.ts"
+
+const ZDR =
+  "0 endpoints out of 1 requested are available matching your guardrail restrictions and data policy. " +
+  "We removed them for the following reasons: ZDR violation (account settings): 1 endpoint excluded; " +
+  "configurable at https://openrouter.ai/settings/privacy"
+
+type Model = Record<string, unknown>
+
+function model(providerID: string, id: string, price: number, extra: Model = {}): Model {
+  return {
+    providerID,
+    id,
+    enabled: true,
+    cost: [{ input: price, output: 0 }],
+    capabilities: { tools: true },
+    limit: { context: 32_768 },
+    time: { released: 1 },
+    ...extra,
+  }
+}
+
+type Handler = (event: Record<string, unknown>) => Promise<void> | void
+
+/**
+ * A minimal plugin host. The real one only provides these calls during setup
+ * and the two hooks, so this is enough to drive the shipped plugin end to end
+ * without a server or a network.
+ */
+function harness(options: Record<string, unknown>, catalog: Model[], hang = false) {
+  const storage = new Map<string, unknown>()
+  const asked: string[] = []
+  const hooks = new Map<string, Handler[]>()
+  const sessions: Record<string, Record<string, unknown>> = {
+    root: { id: "root", model: { providerID: "root", id: "base" } },
+    child: { id: "child", parentID: "root", model: { providerID: "root", id: "base" } },
+  }
+  const tools = new Map<string, { execute: (input: unknown, context: unknown) => Promise<unknown> }>()
+  const notes: Array<{ sessionID: string; text: string }> = []
+  const answers = new Map<string, string>()
+  let failures = 0
+
+  const ctx = {
+    options,
+    storage: {
+      get: async (key: string) => storage.get(key),
+      set: async (key: string, value: unknown) => {
+        storage.set(key, value)
+      },
+    },
+    model: { list: async () => ({ data: catalog }) },
+    agent: {
+      get: async ({ agentID }: { agentID: string }) => ({ data: { id: agentID } }),
+      list: async () => ({ data: [] }),
+    },
+    session: {
+      get: async ({ sessionID }: { sessionID: string }) => sessions[sessionID],
+      context: async () => [],
+      hook: async (name: string, callback: Handler) => {
+        const list = hooks.get(name) ?? []
+        list.push(callback)
+        hooks.set(name, list)
+        return { dispose: async () => {} }
+      },
+      synthetic: async ({ sessionID, text }: { sessionID: string; text: string }) => {
+        notes.push({ sessionID, text })
+      },
+    },
+    tool: {
+      transform: async (callback: (editor: { add: (tool: unknown) => void }) => void) => {
+        callback({ add: (tool) => tools.set((tool as { name: string }).name, tool as never) })
+        return { dispose: async () => {} }
+      },
+      hook: async () => ({ dispose: async () => {} }),
+    },
+    rpc: { register: async () => {} },
+    experimental: {
+      generate: {
+        text: async ({ model: ref }: { model: { providerID: string; id: string } }) => {
+          const key = `${ref.providerID}/${ref.id}`
+          asked.push(key)
+          if (hang) return new Promise(() => {})
+          const answer = answers.get(key)
+          if (answer === undefined) {
+            failures += 1
+            throw new Error(ZDR)
+          }
+          return { text: answer }
+        },
+      },
+    },
+  }
+
+  return { ctx: ctx as never, storage, hooks, tools, notes, answers, asked, failures: () => failures }
+}
+
+async function start(host: ReturnType<typeof harness>) {
+  await plugin.setup(host.ctx)
+  const resolve = host.hooks.get("experimental.model.resolve")?.[0]
+  const retry = host.hooks.get("retry")?.[0]
+  assert.ok(resolve, "the model resolve hook must be registered")
+  assert.ok(retry, "the retry hook must be registered")
+  return { resolve, retry }
+}
+
+const baseTiers = {
+  order: ["worker", "lead", "advisor"],
+  fallback: "advisor",
+  log: false,
+  nudge: false,
+}
+
+test("a paid ZDR refusal fails a lead-tier subagent over to a warm free sibling", async () => {
+  const host = harness(
+    {
+      ...baseTiers,
+      agents: { "swarm-worker-code": "lead" },
+      tiers: {
+        lead: {
+          pick: {
+            ratio: [0, 10],
+            prefer: "quality",
+            limit: 4,
+            rank: { "*paid-a*": 90, "*free-b*": 60, "*base*": 10, "*paid-root*": 5 },
+          },
+        },
+      },
+    },
+    [
+      model("openrouter", "paid-a", 4),
+      model("openrouter", "free-b", 0),
+      model("root", "paid-root", 1),
+      model("root", "base", 2),
+    ],
+  )
+  const { resolve, retry } = await start(host)
+
+  const failed = {
+    sessionID: "child",
+    agent: "swarm-worker-code",
+    model: { providerID: "openrouter", id: "paid-a" },
+    error: { type: "provider.error", message: ZDR },
+    attempt: 1,
+    decision: { retry: true, delay: 15 * 60_000 },
+  }
+  await retry(failed)
+
+  assert.deepEqual(failed.decision, { retry: true, delay: 1_500 })
+  const cooldown = host.storage.get("cooldown") as Record<string, { until: number }>
+  const now = Date.now()
+  assert.ok(cooldown["provider:openrouter:paid"]!.until - now > 71 * 3_600_000, "paid half out for ~72 h")
+  assert.ok(cooldown["openrouter/paid-a"]!.until - now > 71 * 3_600_000, "the refused model is named")
+  assert.equal(cooldown["provider:openrouter:free"], undefined, "the free half is not parked")
+
+  const next = {
+    sessionID: "child",
+    agent: "swarm-worker-code",
+    kind: "primary",
+    model: { providerID: "root", id: "base" },
+  }
+  await resolve(next)
+  assert.deepEqual(next.model, { providerID: "openrouter", id: "free-b" })
+})
+
+test("a free refusal whose siblings are out is saved by the root provider's paid tail", async () => {
+  const host = harness(
+    {
+      ...baseTiers,
+      agents: { "swarm-worker": "worker" },
+      tiers: {
+        worker: {
+          pick: {
+            ratio: [0, 0.05],
+            prefer: "quality",
+            limit: 4,
+            rank: { "*free-a*": 90, "*free-b*": 80, "*paid-root*": 70 },
+          },
+        },
+      },
+    },
+    [
+      model("openrouter", "free-a", 0),
+      model("openrouter", "free-b", 0),
+      model("root", "paid-root", 1),
+      model("root", "base", 10),
+    ],
+  )
+  const { resolve, retry } = await start(host)
+
+  const first = {
+    sessionID: "child",
+    agent: "swarm-worker",
+    kind: "primary",
+    model: { providerID: "root", id: "base" },
+  }
+  await resolve(first)
+  assert.deepEqual(first.model, { providerID: "openrouter", id: "free-a" })
+
+  const failed = {
+    sessionID: "child",
+    agent: "swarm-worker",
+    model: { providerID: "openrouter", id: "free-a" },
+    error: { type: "provider.error", message: ZDR },
+    attempt: 1,
+    decision: { retry: true, delay: 15 * 60_000 },
+  }
+  await retry(failed)
+  assert.deepEqual(failed.decision, { retry: true, delay: 1_500 })
+
+  const cooldown = host.storage.get("cooldown") as Record<string, { until: number }>
+  assert.equal(cooldown["provider:openrouter:paid"], undefined)
+  assert.ok((cooldown["provider:openrouter:free"]?.until ?? 0) > Date.now() + 71 * 3_600_000)
+
+  const next = {
+    sessionID: "child",
+    agent: "swarm-worker",
+    kind: "primary",
+    model: { providerID: "root", id: "base" },
+  }
+  await resolve(next)
+  assert.deepEqual(next.model, { providerID: "root", id: "paid-root" })
+})
+
+test("consult walks past a ZDR refusal to the next candidate and records it", async () => {
+  const host = harness(
+    {
+      ...baseTiers,
+      agents: { "swarm-lead": "lead" },
+      tiers: {
+        lead: {
+          pick: {
+            ratio: [0, 10],
+            prefer: "quality",
+            limit: 3,
+            rank: { "*paid-a*": 90, "*free-b*": 60, "*base*": 10, "*paid-root*": 5 },
+          },
+        },
+      },
+    },
+    [
+      model("openrouter", "paid-a", 4),
+      model("openrouter", "free-b", 0),
+      model("root", "paid-root", 1),
+      model("root", "base", 2),
+    ],
+  )
+  await start(host)
+  host.answers.set("openrouter/free-b", "DECISION: use the paid sibling")
+
+  const consult = host.tools.get("consult")
+  assert.ok(consult, "the consult tool must be registered")
+  const result = (await consult.execute(
+    { brief: "The first model refused; what next?", question: "Pick a model.", tier: "same" },
+    { agent: "swarm-lead", sessionID: "child" },
+  )) as { content: string; metadata: { model: string } }
+
+  assert.equal(host.failures(), 1, "the first candidate was asked and refused")
+  assert.equal(result.metadata.model, "openrouter/free-b")
+  assert.match(result.content, /openrouter\/free-b/)
+  const cooldown = host.storage.get("cooldown") as Record<string, { until: number }>
+  assert.ok((cooldown["provider:openrouter:paid"]?.until ?? 0) > Date.now() + 71 * 3_600_000)
+})
+
+test("the paid tail moves to the next paid model when the cheapest is rate limited", async () => {
+  const host = harness(
+    {
+      ...baseTiers,
+      agents: { "swarm-worker": "worker" },
+      tiers: {
+        worker: {
+          pick: {
+            ratio: [0, 0.05],
+            prefer: "quality",
+            limit: 4,
+            rank: { "*free-a*": 90, "*free-b*": 80, "*paid-cheap*": 70, "*paid-next*": 60 },
+          },
+        },
+      },
+    },
+    [
+      model("openrouter", "free-a", 0),
+      model("openrouter", "free-b", 0),
+      model("root", "paid-cheap", 1),
+      model("root", "paid-next", 2),
+      model("root", "base", 10),
+    ],
+  )
+  const { resolve, retry } = await start(host)
+
+  const ask = async () => {
+    const event = {
+      sessionID: "child",
+      agent: "swarm-worker",
+      kind: "primary",
+      model: { providerID: "root", id: "base" },
+    }
+    await resolve(event)
+    return event.model as { providerID: string; id: string }
+  }
+
+  assert.deepEqual(await ask(), { providerID: "openrouter", id: "free-a" })
+
+  const freeLimit = {
+    sessionID: "child",
+    agent: "swarm-worker",
+    model: { providerID: "openrouter", id: "free-a" },
+    error: { type: "provider.rate-limit", message: "429 Too Many Requests" },
+    attempt: 1,
+    decision: { retry: true, delay: 15 * 60_000 },
+  }
+  await retry(freeLimit)
+  assert.deepEqual(await ask(), { providerID: "root", id: "paid-cheap" })
+
+  const paidLimit = {
+    sessionID: "child",
+    agent: "swarm-worker",
+    model: { providerID: "root", id: "paid-cheap" },
+    error: { type: "provider.rate-limit", message: "429 Too Many Requests" },
+    attempt: 1,
+    decision: { retry: true, delay: 15 * 60_000 },
+  }
+  await retry(paidLimit)
+  // A paid rate limit is model-scoped, so the next paid model is still usable.
+  assert.deepEqual(await ask(), { providerID: "root", id: "paid-next" })
+  const cooldown = host.storage.get("cooldown") as Record<string, { until: number }>
+  assert.equal(cooldown["provider:root:paid"], undefined)
+})
+
+test("consult tries the last candidate of a short list instead of reporting it not tried", async () => {
+  const host = harness(
+    {
+      ...baseTiers,
+      timeoutMs: 200,
+      agents: { "swarm-lead": "lead" },
+      tiers: {
+        lead: {
+          pick: {
+            ratio: [0, 10],
+            prefer: "quality",
+            limit: 3,
+            rank: { "*paid-a*": 90, "*free-b*": 60, "*base*": 10, "*paid-root*": 5 },
+          },
+        },
+      },
+    },
+    [
+      model("openrouter", "paid-a", 4),
+      model("openrouter", "free-b", 0),
+      model("root", "paid-root", 1),
+      model("root", "base", 2),
+    ],
+    true,
+  )
+  await start(host)
+
+  const consult = host.tools.get("consult")
+  assert.ok(consult, "the consult tool must be registered")
+  await assert.rejects(
+    consult.execute(
+      { brief: "Every candidate is slow.", question: "Which one?", tier: "same" },
+      { agent: "swarm-lead", sessionID: "child" },
+    ),
+    (error: Error) => {
+      // The old single deadline left the tail "not tried"; the shared slices
+      // must reach every candidate, including the last one.
+      assert.doesNotMatch(error.message, /not tried/)
+      assert.match(error.message, /root\/paid-root/)
+      return true
+    },
+  )
+  assert.deepEqual(host.asked, [
+    "openrouter/paid-a",
+    "openrouter/free-b",
+    "root/base",
+    "root/paid-root",
+  ])
+})
+
+test("the issue's 'Model unavailable' refusal moves to a sibling, not to a parked provider", async () => {
+  const host = harness(
+    {
+      ...baseTiers,
+      agents: { "explore": "worker" },
+      tiers: {
+        worker: {
+          pick: {
+            ratio: [0, 10],
+            prefer: "quality",
+            limit: 3,
+            rank: { "*iceman-free*": 90, "*sibling-free*": 80, "*base*": 10 },
+          },
+        },
+      },
+    },
+    [
+      model("opencode", "iceman-free", 0),
+      model("opencode", "sibling-free", 0),
+      model("root", "base", 2),
+    ],
+  )
+  const { resolve, retry } = await start(host)
+
+  const first = {
+    sessionID: "child",
+    agent: "explore",
+    kind: "primary",
+    model: { providerID: "root", id: "base" },
+  }
+  await resolve(first)
+  assert.deepEqual(first.model, { providerID: "opencode", id: "iceman-free" })
+
+  const failed = {
+    sessionID: "child",
+    agent: "explore",
+    model: { providerID: "opencode", id: "iceman-free" },
+    error: { type: "provider.error", message: "Model unavailable: opencode/iceman-free" },
+    attempt: 1,
+    decision: { retry: false },
+  }
+  await retry(failed)
+  assert.deepEqual(failed.decision, { retry: true, delay: 1_500 })
+
+  const cooldown = host.storage.get("cooldown") as Record<string, { until: number }>
+  assert.ok((cooldown["opencode/iceman-free"]?.until ?? 0) > Date.now() + 71 * 3_600_000)
+  assert.equal(cooldown["provider:opencode:free"], undefined, "one unserved id must not park its provider")
+
+  const next = {
+    sessionID: "child",
+    agent: "explore",
+    kind: "primary",
+    model: { providerID: "root", id: "base" },
+  }
+  await resolve(next)
+  assert.deepEqual(next.model, { providerID: "opencode", id: "sibling-free" })
+})
+
+test("the paid tail does not preempt an in-band candidate on another provider", async () => {
+  const host = harness(
+    {
+      ...baseTiers,
+      agents: { "swarm-worker": "worker" },
+      tiers: {
+        worker: {
+          pick: {
+            ratio: [0.5, 0.6],
+            prefer: "quality",
+            limit: 3,
+            rank: { "*quality*": 90, "*base*": 10 },
+          },
+        },
+      },
+    },
+    [
+      model("other", "quality", 5.5),
+      model("root", "floor", 1),
+      model("root", "base", 10),
+    ],
+  )
+  const { resolve } = await start(host)
+  const event = {
+    sessionID: "child",
+    agent: "swarm-worker",
+    kind: "primary",
+    model: { providerID: "root", id: "base" },
+  }
+  await resolve(event)
+  // The in-band `other/quality` is group 3 and the root floor is group 2; the
+  // floor must still be last, so the band wins.
+  assert.deepEqual(event.model, { providerID: "other", id: "quality" })
+})
+
+test("the give-up notice runs once, names the 72 h window, and does not repeat", async () => {
+  const host = harness(
+    {
+      ...baseTiers,
+      agents: { "swarm-worker": "worker" },
+      tiers: {
+        worker: {
+          pick: {
+            ratio: [0, 10],
+            prefer: "quality",
+            limit: 1,
+            allow: ["openrouter/*"],
+            rank: { "*only*": 90 },
+          },
+        },
+      },
+    },
+    [model("openrouter", "only", 4), model("root", "base", 2)],
+  )
+  const { resolve, retry } = await start(host)
+
+  const first = {
+    sessionID: "child",
+    agent: "swarm-worker",
+    kind: "primary",
+    model: { providerID: "root", id: "base" },
+  }
+  await resolve(first)
+  assert.deepEqual(first.model, { providerID: "openrouter", id: "only" })
+
+  const failure = () => ({
+    sessionID: "child",
+    agent: "swarm-worker",
+    model: { providerID: "openrouter", id: "only" },
+    error: { type: "provider.error", message: ZDR },
+    attempt: 1,
+    decision: { retry: true, delay: 15 * 60_000 },
+  })
+
+  const one = failure()
+  await retry(one)
+  assert.deepEqual(one.decision, { retry: true, delay: 1_500 })
+  assert.equal(host.notes.length, 0, "no notice while another candidate may still run")
+
+  const next = {
+    sessionID: "child",
+    agent: "swarm-worker",
+    kind: "primary",
+    model: { providerID: "root", id: "base" },
+  }
+  await resolve(next)
+  assert.deepEqual(next.model, { providerID: "root", id: "base" }, "nothing warm is left")
+
+  const two = failure()
+  await retry(two)
+  assert.deepEqual(two.decision, { retry: false })
+  assert.equal(host.notes.length, 1)
+  assert.match(host.notes[0]!.text, /out for about 72h/)
+  assert.match(host.notes[0]!.text, /Use a different subagent/)
+
+  const three = failure()
+  await retry(three)
+  assert.equal(host.notes.length, 1, "the same outage is not announced twice")
+})
