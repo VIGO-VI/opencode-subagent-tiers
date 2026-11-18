@@ -190,13 +190,36 @@ still matches everything before it. The tail changes twice per drift, when the
 reminder appears and when a spawn removes it, which is two cache misses per cycle
 instead of one per request.
 
-A rate-limited worker fails fast. A `retry` hook drops a worker-tier
-`provider.rate-limit` that asks for more than ten seconds, and allows one retry
-of two seconds otherwise. The free tiers answer with a fifteen-minute
-`Retry-After`, which leaves the conductor blocked behind a worker that is not
-going to reply, and that stall is what teaches a conductor to stop delegating.
-Failing the worker returns the error to the conductor at once, so it can
-escalate to `swarm-worker-code` or do the work itself.
+A rate-limited or refused subagent fails fast. A `retry` hook acts on every
+subagent tier (`swarm-worker`, `swarm-worker-code`, `swarm-lead`, `explore`,
+`advisor`), not the worker alone, and only for a session with a parent, so the
+root session keeps the model the user chose. A rate limit replaces the runner's
+fifteen-minute backoff with a retry after 1.5 s (4 s on later attempts), and the
+retry stops when no untried model is left. The stall the hook removes is what
+teaches a conductor to stop delegating; returning at once lets it escalate or do
+the work itself.
+
+A refusal is a state rather than a window. A ZDR or data-policy exclusion, a
+privacy setting, an empty balance, or a model the provider does not serve is
+recorded for three days (72 h) instead of the six-hour gate wait, because
+waiting does not clear a setting. A cause known only from a bare status or a bad
+credential gets ten minutes instead, because a gone model and a wrong base URL
+look the same there. The record names the model, or the provider's free or paid
+half: a free model's refusal never parks a paid sibling of the same provider,
+and the reverse. A free-tier 429 keeps its provider-wide key, since every free
+model on that provider draws on the same allowance. Cooling models are
+reordered to the back of the walk, never dropped.
+
+Inside `consult`, each candidate gets a slice of the call budget rather than the
+whole deadline, so a slow second candidate cannot leave the last one "not
+tried". Every walk also ends with the root provider's cheapest paid,
+tool-capable model, so a band that resolves only free models still has a floor
+while the session itself is being served.
+
+The built-in `general` agent is deliberately not in the `agents` map: mapping it
+would replace a per-spawn `model`, which is the escape hatch the issue describes.
+Add `"general": "worker"` to `agents` in `opencode.json` if you want it routed
+and do not use per-spawn overrides.
 
 What makes an agent actually delegate, in order of strength:
 
@@ -573,9 +596,9 @@ not record that split, so a single exact figure would be invented.
 $ npx tsc --noEmit && echo TYPECHECK OK
 TYPECHECK OK
 
-$ node --test plugin/select.test.ts
-ℹ tests 17
-ℹ pass 17
+$ npm test
+ℹ tests 73
+ℹ pass 73
 ℹ fail 0
 
 $ grep "tier-router:" /tmp/tier-test/run5.err

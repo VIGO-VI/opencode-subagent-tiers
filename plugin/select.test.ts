@@ -16,6 +16,7 @@ import {
   pickCandidates,
   rankFor,
   resolveCandidates,
+  withPaidTail,
   type Candidate,
   type TierSpec,
 } from "./select.ts"
@@ -358,4 +359,117 @@ test("a tier with no share and no cap is unbounded", () => {
   assert.equal(verdict.allowed, true)
   assert.equal(verdict.bound, "none")
   assert.equal(Number.isFinite(verdict.limit), false)
+})
+
+// A root provider with free models, the root's own base, and paid models at
+// several prices. The tail must reach the root provider's cheapest paid model
+// even when the tier's band stops at the free ones, and must never cross to
+// another provider.
+const tailPool: Candidate[] = [
+  candidate("free-a", 0, 100, "root"),
+  candidate("free-b", 0, 90, "root"),
+  candidate("paid-embed", 0.2, 40, "root"),
+  candidate("paid-no-tools", 0.5, 50, "root", { tools: false }),
+  candidate("paid-small", 1, 60, "root", { context: 4_000 }),
+  candidate("paid-floor", 8, 80, "root"),
+  candidate("paid-big", 9, 70, "root", { context: 32_000 }),
+  candidate("other-cheap", 0.1, 110, "other"),
+]
+
+const workerPick: TierSpec = {
+  pick: { ratio: [0, 0.6], prefer: "cost", limit: 2, freeSlots: 3, deny: ["*embed*"], requireTools: true },
+}
+
+test("the paid tail is the root provider's cheapest usable paid model, outside the band", () => {
+  const picked = withPaidTail(
+    resolveCandidates(workerPick, tailPool, "root/base", rank),
+    workerPick,
+    tailPool,
+    "root",
+  )
+  assert.deepEqual(
+    picked.map((entry) => entry.ref.id),
+    ["free-a", "free-b", "paid-small"],
+  )
+  // A cheaper paid model on another provider is not the session's floor.
+  assert.equal(picked.some((entry) => entry.ref.id === "other-cheap"), false)
+})
+
+test("a tier whose free candidates are all out still returns the paid tail", () => {
+  const picked = withPaidTail(
+    resolveCandidates(workerPick, tailPool, "root/base", rank),
+    workerPick,
+    tailPool,
+    "root",
+  )
+  // This is what the resolver's cooling filter leaves behind when every free
+  // candidate has been struck.
+  const free = new Set(["free-a", "free-b"])
+  const warm = picked.filter((entry) => !free.has(entry.ref.id))
+  assert.deepEqual(
+    warm.map((entry) => entry.ref.id),
+    ["paid-small"],
+  )
+})
+
+test("the paid tail respects deny, tools and context, and never duplicates a candidate", () => {
+  // paid-embed is cheaper but denied by the tier's pattern.
+  const defaultTail = withPaidTail([], workerPick, tailPool, "root")
+  assert.deepEqual(
+    defaultTail.map((entry) => entry.ref.id),
+    ["paid-small"],
+  )
+
+  // paid-no-tools is cheaper than paid-small but cannot call tools, so the
+  // assertion above also proves the tool-capable filter.
+  const noDeny: TierSpec = { pick: { ...workerPick.pick, deny: [] } }
+  const embed = withPaidTail([], noDeny, tailPool, "root")
+  assert.deepEqual(
+    embed.map((entry) => entry.ref.id),
+    ["paid-embed"],
+  )
+
+  const bigContext: TierSpec = { pick: { ...workerPick.pick, minContext: 16_000 } }
+  const big = withPaidTail([], bigContext, tailPool, "root")
+  assert.deepEqual(
+    big.map((entry) => entry.ref.id),
+    ["paid-floor"],
+  )
+
+  const twice = withPaidTail(embed, noDeny, tailPool, "root")
+  assert.equal(new Set(twice.map((entry) => entry.ref.id)).size, twice.length)
+})
+
+test("the paid tail prefers a usable model and falls back to the cheapest", () => {
+  // paid-small is the cheapest, but it is cooling or already failed.
+  const next = withPaidTail([], workerPick, tailPool, "root", (model) => model.id !== "paid-small")
+  assert.deepEqual(
+    next.map((entry) => entry.ref.id),
+    ["paid-floor"],
+  )
+  // When the whole provider half is out, the cheapest is still the last try.
+  const fallback = withPaidTail([], workerPick, tailPool, "root", () => false)
+  assert.deepEqual(
+    fallback.map((entry) => entry.ref.id),
+    ["paid-small"],
+  )
+})
+
+test("no root provider, or a named model list, is left as it is", () => {
+  const named: TierSpec = { models: ["root/paid-floor"] }
+  const resolved = resolveCandidates(named, tailPool, "root/base", rank)
+  assert.deepEqual(withPaidTail(resolved, named, tailPool, "root"), resolved)
+  assert.deepEqual(withPaidTail(resolved, named, tailPool, undefined), resolved)
+  assert.deepEqual(withPaidTail([], workerPick, tailPool, undefined), [])
+})
+
+test("the paid tail respects a tier's allow list", () => {
+  const elsewhere: TierSpec = { pick: { ...workerPick.pick, allow: ["other/*"] } }
+  assert.deepEqual(withPaidTail([], elsewhere, tailPool, "root"), [])
+
+  const rootOnly: TierSpec = { pick: { ...workerPick.pick, allow: ["root/*"] } }
+  assert.deepEqual(
+    withPaidTail([], rootOnly, tailPool, "root").map((entry) => entry.ref.id),
+    ["paid-small"],
+  )
 })

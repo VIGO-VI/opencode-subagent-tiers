@@ -69,7 +69,7 @@ export type TierSpec = {
   label?: string
 }
 
-export type Resolved = { ref: ModelRef; note: string }
+export type Resolved = { ref: ModelRef; note: string; /** The paid floor, kept last in a walk. */ tail?: true }
 
 export function parseModel(reference: string): ModelRef {
   const hash = reference.indexOf("#")
@@ -288,6 +288,46 @@ export function resolveCandidates(
     return resolved
   }
   return pickCandidates(spec, pool, anchorKey, fallbackRank, kind)
+}
+
+/**
+ * Append the root session's cheapest paid, tool-capable model when the tier's
+ * own band did not reach it.
+ *
+ * A tier is a fallback list, and a free model that is out of allowance must not
+ * end it while the session itself is being served by a provider with credit.
+ * This only ever adds a paid model: it never drops a free one, so the free and
+ * paid halves stay separate. `allow`, `deny` and `minContext` still apply: a
+ * tier narrowed to chosen providers must not reach outside them for its floor.
+ *
+ * `usable` prefers a model that is not cooling or already failed. When none is,
+ * the cheapest one is still appended at the end of the walk, because a provider
+ * key can be broader than the model it was learned from. `ask()` keeps cold
+ * candidates and reaches it; the resolver serves only warm ones.
+ */
+export function withPaidTail(
+  candidates: readonly Resolved[],
+  spec: TierSpec,
+  pool: readonly Candidate[],
+  rootProvider: string | undefined,
+  usable?: (model: Candidate) => boolean,
+): Resolved[] {
+  const copy = [...candidates]
+  const pick = spec.pick
+  if (!rootProvider || !pick) return copy
+  const have = new Set(copy.map((candidate) => modelKey(candidate.ref)))
+  const paid = pool
+    .filter((model) => model.providerID === rootProvider)
+    .filter((model) => model.price > 0 && model.tools !== false)
+    .filter((model) => !pick.allow || matchesAny(pick.allow, modelKey(model), model.id))
+    .filter((model) => !matchesAny(pick.deny, modelKey(model), model.id))
+    .filter((model) => pick.minContext === undefined || (model.context ?? Number.POSITIVE_INFINITY) >= pick.minContext)
+    .filter((model) => !have.has(modelKey(model)))
+    .sort((a, b) => a.price - b.price || b.released - a.released)
+  const tail = (usable ? paid.find(usable) : paid[0]) ?? paid[0]
+  if (!tail) return copy
+  copy.push({ ref: tail.ref, note: `${modelKey(tail)} ${tail.price} paid tail`, tail: true })
+  return copy
 }
 
 export type BudgetSpec = {
