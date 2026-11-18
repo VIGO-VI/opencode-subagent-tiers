@@ -244,6 +244,34 @@ test("free slots go round the providers before one crowds the others out", () =>
   )
 })
 
+test("a provider-confined walk spends its slots inside that provider", () => {
+  // A subagent's model hook cannot change provider, so the walk is narrowed
+  // before the free slots and the limit are spent: another provider's models
+  // must not take the place of the ones this request can actually reach.
+  const mixed: Candidate[] = [
+    candidate("go-free-a", 0, 400, "opencode-go"),
+    candidate("go-free-b", 0, 390, "opencode-go"),
+    candidate("main-free", 0, 380, "opencode"),
+    candidate("router-free", 0, 370, "console-openrouter"),
+    candidate("main-paid", 0.2, 360, "opencode"),
+  ]
+  const spec: TierSpec = {
+    pick: {
+      ratio: [0, 1.5],
+      prefer: "cost",
+      limit: 3,
+      freeSlots: 2,
+      providerOrder: ["opencode-go", "opencode", "console-openrouter"],
+      providers: ["opencode"],
+    },
+  }
+  const picked = pickCandidates(spec, mixed, "opencode/main-paid", rank)
+  assert.deepEqual(
+    picked.map((entry) => entry.ref.id),
+    ["main-free", "main-paid"],
+  )
+})
+
 test("newestOfFamily returns undefined when the family is absent", () => {
   assert.equal(newestOfFamily("nope", pool), undefined)
 })
@@ -438,6 +466,18 @@ test("the paid tail respects deny, tools and context, and never duplicates a can
 
   const twice = withPaidTail(embed, noDeny, tailPool, "root")
   assert.equal(new Set(twice.map((entry) => entry.ref.id)).size, twice.length)
+})
+
+test("the paid tail respects a provider-confined walk", () => {
+  // The floor may only come from the provider the request is already on.
+  const other: TierSpec = { pick: { ...workerPick.pick, providers: ["other"] } }
+  assert.deepEqual(withPaidTail([], other, tailPool, "root"), [])
+
+  const rootOnly: TierSpec = { pick: { ...workerPick.pick, providers: ["root"] } }
+  assert.deepEqual(
+    withPaidTail([], rootOnly, tailPool, "root").map((entry) => entry.ref.id),
+    ["paid-small"],
+  )
 })
 
 test("the paid tail prefers a usable model and falls back to the cheapest", () => {

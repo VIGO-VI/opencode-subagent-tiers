@@ -159,13 +159,45 @@ test("a paid ZDR refusal fails a lead-tier subagent over to a warm free sibling"
     sessionID: "child",
     agent: "swarm-worker-code",
     kind: "primary",
-    model: { providerID: "root", id: "base" },
+    model: { providerID: "openrouter", id: "paid-a" },
   }
   await resolve(next)
   assert.deepEqual(next.model, { providerID: "openrouter", id: "free-b" })
 })
 
-test("a free refusal whose siblings are out is saved by the root provider's paid tail", async () => {
+test("the model hook never changes provider, because OpenCode cannot resolve one", async () => {
+  const host = harness(
+    {
+      ...baseTiers,
+      agents: { "swarm-worker": "worker" },
+      tiers: {
+        worker: {
+          pick: { ratio: [0, 10], prefer: "cost", limit: 4, rank: { "*iceman-free*": 90, "*longcat-free*": 40 } },
+        },
+      },
+    },
+    [
+      model("opencode", "iceman-free", 0),
+      model("opencode-go", "longcat-free", 0),
+      model("opencode-go", "paid-go", 1),
+      model("root", "base", 2),
+    ],
+  )
+  const { resolve } = await start(host)
+  const event = {
+    sessionID: "child",
+    agent: "swarm-worker",
+    kind: "primary",
+    model: { providerID: "opencode-go", id: "longcat-free" },
+  }
+  await resolve(event)
+  // iceman-free is free and ranks higher, but it is on another provider, and
+  // OpenCode answers a provider change with `ModelUnavailableError` before the
+  // request is sent. The walk must stay on the provider the child started on.
+  assert.deepEqual(event.model, { providerID: "opencode-go", id: "longcat-free" })
+})
+
+test("a free refusal whose siblings are out is saved by the same provider's paid floor", async () => {
   const host = harness(
     {
       ...baseTiers,
@@ -176,7 +208,7 @@ test("a free refusal whose siblings are out is saved by the root provider's paid
             ratio: [0, 0.05],
             prefer: "quality",
             limit: 4,
-            rank: { "*free-a*": 90, "*free-b*": 80, "*paid-root*": 70 },
+            rank: { "*free-a*": 90, "*free-b*": 80, "*paid-floor*": 70 },
           },
         },
       },
@@ -184,7 +216,7 @@ test("a free refusal whose siblings are out is saved by the root provider's paid
     [
       model("openrouter", "free-a", 0),
       model("openrouter", "free-b", 0),
-      model("root", "paid-root", 1),
+      model("openrouter", "paid-floor", 1),
       model("root", "base", 10),
     ],
   )
@@ -194,7 +226,7 @@ test("a free refusal whose siblings are out is saved by the root provider's paid
     sessionID: "child",
     agent: "swarm-worker",
     kind: "primary",
-    model: { providerID: "root", id: "base" },
+    model: { providerID: "openrouter", id: "free-a" },
   }
   await resolve(first)
   assert.deepEqual(first.model, { providerID: "openrouter", id: "free-a" })
@@ -218,10 +250,10 @@ test("a free refusal whose siblings are out is saved by the root provider's paid
     sessionID: "child",
     agent: "swarm-worker",
     kind: "primary",
-    model: { providerID: "root", id: "base" },
+    model: { providerID: "openrouter", id: "free-a" },
   }
   await resolve(next)
-  assert.deepEqual(next.model, { providerID: "root", id: "paid-root" })
+  assert.deepEqual(next.model, { providerID: "openrouter", id: "paid-floor" })
 })
 
 test("consult walks past a ZDR refusal to the next candidate and records it", async () => {
@@ -264,7 +296,7 @@ test("consult walks past a ZDR refusal to the next candidate and records it", as
   assert.ok((cooldown["provider:openrouter:paid"]?.until ?? 0) > Date.now() + 71 * 3_600_000)
 })
 
-test("the paid tail moves to the next paid model when the cheapest is rate limited", async () => {
+test("the paid floor moves to the next paid model when the cheapest is rate limited", async () => {
   const host = harness(
     {
       ...baseTiers,
@@ -283,8 +315,8 @@ test("the paid tail moves to the next paid model when the cheapest is rate limit
     [
       model("openrouter", "free-a", 0),
       model("openrouter", "free-b", 0),
-      model("root", "paid-cheap", 1),
-      model("root", "paid-next", 2),
+      model("openrouter", "paid-cheap", 1),
+      model("openrouter", "paid-next", 2),
       model("root", "base", 10),
     ],
   )
@@ -295,7 +327,7 @@ test("the paid tail moves to the next paid model when the cheapest is rate limit
       sessionID: "child",
       agent: "swarm-worker",
       kind: "primary",
-      model: { providerID: "root", id: "base" },
+      model: { providerID: "openrouter", id: "free-a" },
     }
     await resolve(event)
     return event.model as { providerID: string; id: string }
@@ -312,21 +344,21 @@ test("the paid tail moves to the next paid model when the cheapest is rate limit
     decision: { retry: true, delay: 15 * 60_000 },
   }
   await retry(freeLimit)
-  assert.deepEqual(await ask(), { providerID: "root", id: "paid-cheap" })
+  assert.deepEqual(await ask(), { providerID: "openrouter", id: "paid-cheap" })
 
   const paidLimit = {
     sessionID: "child",
     agent: "swarm-worker",
-    model: { providerID: "root", id: "paid-cheap" },
+    model: { providerID: "openrouter", id: "paid-cheap" },
     error: { type: "provider.rate-limit", message: "429 Too Many Requests" },
     attempt: 1,
     decision: { retry: true, delay: 15 * 60_000 },
   }
   await retry(paidLimit)
   // A paid rate limit is model-scoped, so the next paid model is still usable.
-  assert.deepEqual(await ask(), { providerID: "root", id: "paid-next" })
+  assert.deepEqual(await ask(), { providerID: "openrouter", id: "paid-next" })
   const cooldown = host.storage.get("cooldown") as Record<string, { until: number }>
-  assert.equal(cooldown["provider:root:paid"], undefined)
+  assert.equal(cooldown["provider:openrouter:paid"], undefined)
 })
 
 test("consult tries the last candidate of a short list instead of reporting it not tried", async () => {
@@ -407,7 +439,7 @@ test("the issue's 'Model unavailable' refusal moves to a sibling, not to a parke
     sessionID: "child",
     agent: "explore",
     kind: "primary",
-    model: { providerID: "root", id: "base" },
+    model: { providerID: "opencode", id: "iceman-free" },
   }
   await resolve(first)
   assert.deepEqual(first.model, { providerID: "opencode", id: "iceman-free" })
@@ -431,13 +463,13 @@ test("the issue's 'Model unavailable' refusal moves to a sibling, not to a parke
     sessionID: "child",
     agent: "explore",
     kind: "primary",
-    model: { providerID: "root", id: "base" },
+    model: { providerID: "opencode", id: "iceman-free" },
   }
   await resolve(next)
   assert.deepEqual(next.model, { providerID: "opencode", id: "sibling-free" })
 })
 
-test("the paid tail does not preempt an in-band candidate on another provider", async () => {
+test("the paid floor does not preempt an in-band candidate on the same provider", async () => {
   const host = harness(
     {
       ...baseTiers,
@@ -448,14 +480,15 @@ test("the paid tail does not preempt an in-band candidate on another provider", 
             ratio: [0.5, 0.6],
             prefer: "quality",
             limit: 3,
-            rank: { "*quality*": 90, "*base*": 10 },
+            rank: { "*quality*": 90, "*start*": 10 },
           },
         },
       },
     },
     [
       model("other", "quality", 5.5),
-      model("root", "floor", 1),
+      model("other", "floor", 1),
+      model("other", "start", 10),
       model("root", "base", 10),
     ],
   )
@@ -464,11 +497,11 @@ test("the paid tail does not preempt an in-band candidate on another provider", 
     sessionID: "child",
     agent: "swarm-worker",
     kind: "primary",
-    model: { providerID: "root", id: "base" },
+    model: { providerID: "other", id: "start" },
   }
   await resolve(event)
-  // The in-band `other/quality` is group 3 and the root floor is group 2; the
-  // floor must still be last, so the band wins.
+  // The in-band `other/quality` is paid like the floor, but the floor is a tail
+  // and must stay last, so the band wins.
   assert.deepEqual(event.model, { providerID: "other", id: "quality" })
 })
 
@@ -497,7 +530,7 @@ test("the give-up notice runs once, names the 72 h window, and does not repeat",
     sessionID: "child",
     agent: "swarm-worker",
     kind: "primary",
-    model: { providerID: "root", id: "base" },
+    model: { providerID: "openrouter", id: "only" },
   }
   await resolve(first)
   assert.deepEqual(first.model, { providerID: "openrouter", id: "only" })
@@ -520,10 +553,10 @@ test("the give-up notice runs once, names the 72 h window, and does not repeat",
     sessionID: "child",
     agent: "swarm-worker",
     kind: "primary",
-    model: { providerID: "root", id: "base" },
+    model: { providerID: "openrouter", id: "only" },
   }
   await resolve(next)
-  assert.deepEqual(next.model, { providerID: "root", id: "base" }, "nothing warm is left")
+  assert.deepEqual(next.model, { providerID: "openrouter", id: "only" }, "nothing warm is left")
 
   const two = failure()
   await retry(two)

@@ -1192,9 +1192,18 @@ export default Plugin.define({
         // only once every free candidate has been tried or is out. Then the
         // provider already in play before the rest, so the prompt cache stays
         // warm while that provider still has something to offer. Every tier
-        // also ends with the root provider's cheapest paid model, so a walk
-        // cannot end empty while the session itself is still being served.
-        const spec = tiers[tierName]
+        // also ends with a paid model on that provider, so a walk cannot end
+        // empty while there is still credit there.
+        //
+        // The walk stays on the provider the request started on. OpenCode's
+        // resolve hook cannot change provider: a model from another provider
+        // comes back as `ModelUnavailableError` before the request is sent, and
+        // the subagent dies on its first failover. The provider is chosen by the
+        // agent's model, or by the `model` passed to the spawn, and this hook
+        // only walks the models on it.
+        const from = event.model.providerID
+        const tier = tiers[tierName]
+        const spec = tier.pick ? { ...tier, pick: { ...tier.pick, providers: [from] } } : tier
         const cheap = !spec.pick?.ratio || spec.pick.ratio[0] === 0
         // The band is priced against the session's own base model, the anchor a
         // consult already uses. Without it the ratio has nothing to compare to,
@@ -1202,7 +1211,6 @@ export default Plugin.define({
         const rootID = await rootSession(event.sessionID)
         const rootInfo = await ctx.session.get({ sessionID: rootID }).catch(() => undefined)
         const anchor = rootInfo?.model ? modelKey(rootInfo.model) : undefined
-        const rootProvider = rootInfo?.model?.providerID
         const live = await cooldowns()
         const nowMs = Date.now()
         const priceOf = new Map(models.map((model) => [modelKey(model), model.price]))
@@ -1227,7 +1235,7 @@ export default Plugin.define({
           resolveCandidates(spec, models, anchor, rankings.rank),
           spec,
           models,
-          rootProvider,
+          from,
           usableTail,
         )
         const reachable = cheap
@@ -1240,16 +1248,13 @@ export default Plugin.define({
               ),
               spec,
               models,
-              rootProvider,
+              from,
               usableTail,
             )
           : ordered
-        const from = event.model.providerID
-        // 0 free on this provider, 1 free elsewhere, 2 paid here, 3 paid anywhere.
-        const group = (candidate: Resolved) => {
-          const free = (priceOf.get(modelKey(candidate.ref)) ?? 1) === 0 ? 0 : 2
-          return free + (candidate.ref.providerID === from ? 0 : 1)
-        }
+        // Every candidate is on this provider now, so the group only separates
+        // free from paid; the provider half stays for the trace's shape.
+        const group = (candidate: Resolved) => ((priceOf.get(modelKey(candidate.ref)) ?? 1) === 0 ? 0 : 2)
         // The paid floor is last, as the issue asks: an in-band candidate is
         // preferred even when the floor shares the session's own provider.
         const candidates = [...reachable].sort(
@@ -1274,6 +1279,21 @@ export default Plugin.define({
         if (warm.length === 0) {
           // Nothing left that is both untried and reachable now, so another
           // attempt would repeat a refusal the caller has already paid for.
+          // Name what the provider boundary put out of reach: the tier may still
+          // have candidates, but the hook cannot cross to them.
+          const elsewhere = resolveCandidates(tier, models, anchor, rankings.rank)
+            .filter((candidate) => candidate.ref.providerID !== from)
+            .filter((candidate) => !done.has(modelKey(candidate.ref)))
+            .filter((candidate) => !isCooling(live, candidate.ref, priceOf.get(modelKey(candidate.ref)) ?? 1, nowMs))
+          if (elsewhere.length > 0) {
+            trace.line(
+              `tier-router: ${event.agent} has nothing left on ${from}; the model hook cannot change provider, ` +
+                `so ${elsewhere
+                  .slice(0, 4)
+                  .map((candidate) => modelKey(candidate.ref))
+                  .join(", ")} stay out of reach`,
+            )
+          }
           exhausted.add(event.sessionID)
           return
         }

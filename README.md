@@ -212,9 +212,20 @@ reordered to the back of the walk, never dropped.
 
 Inside `consult`, each candidate gets a slice of the call budget rather than the
 whole deadline, so a slow second candidate cannot leave the last one "not
-tried". Every walk also ends with the root provider's cheapest paid,
-tool-capable model, so a band that resolves only free models still has a floor
-while the session itself is being served.
+tried". Every walk also ends with a paid, tool-capable floor: the base
+provider's cheapest model for a consult, and the request's own provider's
+cheapest for a subagent, so a band that resolves only free models still has a
+floor while there is credit on the provider it runs on.
+
+A subagent's model walk cannot leave its provider. OpenCode's
+`experimental.model.resolve` hook only accepts a model on the provider the
+request started on; anything else is answered with `ModelUnavailableError`
+before the request is sent, which used to kill a worker on its first failover.
+The provider is therefore chosen by the agent's own `model` line — or by the
+`model` passed to the spawn — and the resolver only orders the models on it.
+That makes the per-spawn `model` the way to move a worker to another provider's
+free pool, and it means a never-answered model is now only ever a model-scoped
+strike, not a dead session.
 
 The built-in `general` agent is deliberately not in the `agents` map: mapping it
 would replace a per-spawn `model`, which is the escape hatch the issue describes.
@@ -390,6 +401,11 @@ consult can carry that one line and nothing else.
   `prefer: "cost"` tries free models first, then the configured provider order,
   then the cheapest paid model. Extra free models stay at the end as a last
   resort.
+- `providers` confines a tier to the named providers, before the free slots and
+  the limit are spent, and the paid floor obeys it too. The subagent resolver
+  sets it to the provider the request is already on, because that is the only
+  provider the model hook can serve; a consult leaves it unset and may cross
+  providers.
 - `rank` and `byKind.<kind>.rank` are wildcard tables over model ids. A newer
   release of the same family inherits its family's score and wins on recency,
   so a 4.2 beats a 4.1 without editing code.
@@ -409,11 +425,11 @@ socket the app owns, so the file is the copy that survives. `log` in the plugin
 options names another file, or `false` keeps it off disk. The file is capped at
 256 KB and rewritten to its last 128 KB, so it needs no rotation.
 
-### Free fallback across providers
+### Free fallback within a provider
 
-Every free model the catalog offers is a candidate, whatever its provider. On
-2026-11-16 this machine's catalog had 35 of them across `opencode-go`, `opencode`
-and `console-openrouter`, counted with:
+Every free model on the provider a request runs on is a candidate. On 2026-11-16
+this machine's catalog had 35 free models across `opencode-go`, `opencode` and
+`console-openrouter`, counted with:
 
 ```sh
 opencode api get /api/model | python3 -c "
@@ -422,10 +438,18 @@ d=json.load(sys.stdin)['data']
 print(sum(1 for m in d if m.get('cost') and m['cost'][0]['input']==0 and m['cost'][0]['output']==0))"
 ```
 
-`freeSlots` caps how many free candidates are tried before a paid one, and the
-free slots go round `providerOrder`, so one provider's free models cannot crowd
-out another's. Then a cheap paid model is tried, and any free model left over
-stays at the end as a last resort. A run from this machine:
+A subagent's walk stays on one of those providers, because the model hook
+cannot change provider (see above). So the free pool that matters is the one
+behind the agent's `model` line: an `opencode` worker walks the free models on
+`opencode`, and a `console-openrouter` worker walks the ones there. To move a
+worker to another pool, spawn it with that provider's model, for example
+`model: "opencode/iceman-free"`.
+
+`freeSlots` caps how many free candidates are tried before a paid one, then a
+cheap paid model on the same provider is tried, and any free model left over
+stays at the end as a last resort. A consult, which does not go through the
+session hook, still rotates `providerOrder` across providers. A run from this
+machine:
 
 ```
 tier-router: worker/lookup for base opencode-go/deepseek-v4.1-flash ->
@@ -435,9 +459,10 @@ tier-router: worker/lookup for base opencode-go/deepseek-v4.1-flash ->
   opencode-go/muse-spark-1.3-contributor 0.40x rank 40
 ```
 
-A new provider needs no code: it becomes eligible when its models appear in the
-catalog, and it gets a turn in the free rotation by being added to
-`providerOrder`. `allow` and `deny` patterns can scope a tier to particular
+`providerOrder` still decides which provider `models.mjs` writes into each
+agent's `model` line, so it is how a fresh install chooses a worker's starting
+pool. A new provider needs no code: it becomes eligible when its models appear
+in the catalog. `allow`, `providers` and `deny` can scope a tier to particular
 providers or model families.
 
 ### When list price is not your price

@@ -42,6 +42,13 @@ export type Pick = {
   rank?: Record<string, number>
   /** Provider ids to prefer, in order, when price and rank are otherwise equal. */
   providerOrder?: string[]
+  /**
+   * Only consider models on these providers, in every part of the walk including
+   * the paid tail. A session's model hook can only swap a model for one on the
+   * provider the request started on, so a subagent's walk is narrowed to that
+   * provider rather than reaching across providers and failing.
+   */
+  providers?: string[]
   /** Per-task overrides, merged over this policy. Keys are free-form task kinds. */
   byKind?: Record<string, Pick>
   /** How many free candidates to try before moving to paid ones. Defaults to 3. */
@@ -159,6 +166,7 @@ export function pickCandidates(
   const allowed = pool.filter(
     (model) =>
       (!pick.allow || matchesAny(pick.allow, modelKey(model), model.id)) &&
+      (!pick.providers || pick.providers.includes(model.providerID)) &&
       !matchesAny(pick.deny, modelKey(model), model.id) &&
       (!pick.requireTools || model.tools !== false) &&
       (pick.minContext === undefined || (model.context ?? Number.POSITIVE_INFINITY) >= pick.minContext),
@@ -291,14 +299,19 @@ export function resolveCandidates(
 }
 
 /**
- * Append the root session's cheapest paid, tool-capable model when the tier's
- * own band did not reach it.
+ * Append a provider's cheapest paid, tool-capable model when the tier's own
+ * band did not reach it.
  *
  * A tier is a fallback list, and a free model that is out of allowance must not
- * end it while the session itself is being served by a provider with credit.
+ * end it while there is still credit on the provider the request runs on. For a
+ * consult that provider is the session's base one; for a subagent's model
+ * resolve it is the provider the request started on, because the hook cannot
+ * change provider at all.
+ *
  * This only ever adds a paid model: it never drops a free one, so the free and
- * paid halves stay separate. `allow`, `deny` and `minContext` still apply: a
- * tier narrowed to chosen providers must not reach outside them for its floor.
+ * paid halves stay separate. `allow`, `deny`, `providers` and `minContext` still
+ * apply: a tier narrowed to chosen providers must not reach outside them for its
+ * floor.
  *
  * `usable` prefers a model that is not cooling or already failed. When none is,
  * the cheapest one is still appended at the end of the walk, because a provider
@@ -309,15 +322,16 @@ export function withPaidTail(
   candidates: readonly Resolved[],
   spec: TierSpec,
   pool: readonly Candidate[],
-  rootProvider: string | undefined,
+  providerID: string | undefined,
   usable?: (model: Candidate) => boolean,
 ): Resolved[] {
   const copy = [...candidates]
   const pick = spec.pick
-  if (!rootProvider || !pick) return copy
+  if (!providerID || !pick) return copy
   const have = new Set(copy.map((candidate) => modelKey(candidate.ref)))
   const paid = pool
-    .filter((model) => model.providerID === rootProvider)
+    .filter((model) => model.providerID === providerID)
+    .filter((model) => !pick.providers || pick.providers.includes(model.providerID))
     .filter((model) => model.price > 0 && model.tools !== false)
     .filter((model) => !pick.allow || matchesAny(pick.allow, modelKey(model), model.id))
     .filter((model) => !matchesAny(pick.deny, modelKey(model), model.id))
