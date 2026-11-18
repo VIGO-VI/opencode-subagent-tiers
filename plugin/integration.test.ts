@@ -257,6 +257,45 @@ test("free models that are both out are saved by the same provider's paid floor"
   assert.deepEqual(await ask(), { providerID: "openrouter", id: "paid-floor" })
 })
 
+test("a rate limit stays in the minutes however many strikes it takes", async () => {
+  const host = harness(
+    {
+      ...baseTiers,
+      agents: { "swarm-worker": "worker" },
+      tiers: {
+        worker: {
+          pick: { ratio: [0, 10], prefer: "quality", limit: 2, rank: { "*free-a*": 90 } },
+        },
+      },
+    },
+    [model("openrouter", "free-a", 0), model("openrouter", "paid", 1), model("root", "base", 10)],
+  )
+  const { retry } = await start(host)
+
+  const limit = () => ({
+    sessionID: "child",
+    agent: "swarm-worker",
+    model: { providerID: "openrouter", id: "free-a" },
+    error: { type: "provider.rate-limit", message: "429 Too Many Requests" },
+    attempt: 1,
+    decision: { retry: true, delay: 900_000 },
+  })
+
+  // Free tiers limit strictly, so the third 429 in a row must not hand the tier
+  // to a paid model for the rest of the day: 60 s, 120 s, 240 s, and the cap is
+  // ten minutes rather than six hours.
+  const waits: number[] = []
+  for (let round = 0; round < 3; round++) {
+    await retry(limit())
+    const entry = (host.storage.get("cooldown") as Record<string, { until: number; at: number }>)[
+      "openrouter/free-a"
+    ]!
+    waits.push(entry.until - entry.at)
+  }
+  assert.deepEqual(waits, [60_000, 120_000, 240_000])
+  assert.equal((host.storage.get("cooldown") as Record<string, unknown>)["provider:openrouter:free"], undefined)
+})
+
 test("consult walks past a ZDR refusal to the next candidate and records it", async () => {
   const host = harness(
     {

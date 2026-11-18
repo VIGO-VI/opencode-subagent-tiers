@@ -357,14 +357,15 @@ export default Plugin.define({
      * How long a model stays out after a rate limit, mirroring the exponential
      * backoff the runner already uses for a failed request, but per model and
      * across requests. One strike is a minute, then two, four, eight, and it
-     * stops doubling at ten. A success clears the strikes, so a provider that
-     * recovers is used again straight away.
+     * stops doubling at ten. The wait never leaves the minutes: free tiers have
+     * strict limits and a 429 says "not now", not "not today", so a flapping free
+     * model must not hand the tier to a paid model for the rest of the day. A
+     * success clears the strikes, so a provider that recovers is used again
+     * straight away.
      */
     const COOLDOWN_BASE_MS = 60_000
     const COOLDOWN_MAX_MS = 600_000
     const COOLDOWN_FORGET_MS = 3_600_000
-    /** A model that will not serve the account is not a minute-long problem. */
-    const GATE_COOLDOWN_MS = 6 * 3_600_000
     /** How far above the base price a cheap tier may reach for its paid tail. */
     const PAID_TAIL_RATIO = 2
 
@@ -417,14 +418,12 @@ export default Plugin.define({
     async function strikeOne(key: string, fixedMs?: number) {
       const live = await cooldowns()
       const strikes = Number(live[key]?.strikes ?? 0) + 1
-      // Three strikes is out. The doubling exists to ride out a short window, and
-      // a third refusal in a row says this is not a short window, so the model
-      // goes away for the same hours as one that will not serve the account at
-      // all. Without this it would be retried every ten minutes for as long as
-      // the process lives.
-      const wait =
-        fixedMs ??
-        (strikes >= 3 ? GATE_COOLDOWN_MS : Math.min(COOLDOWN_MAX_MS, COOLDOWN_BASE_MS * 2 ** (strikes - 1)))
+      // A rate limit stays in the minutes however many strikes it racks up. Free
+      // tiers limit strictly, so a model that says 429 for the third time today
+      // is telling the walk to look elsewhere for now, not to leave the free
+      // pool for hours and make the tier pay. A refusal is the state that
+      // deserves hours, and it arrives as `fixedMs`.
+      const wait = fixedMs ?? Math.min(COOLDOWN_MAX_MS, COOLDOWN_BASE_MS * 2 ** (strikes - 1))
       const now = Date.now()
       // A window never shortens. A model that refused on a setting and later
       // answers a rate limit is still gated, so a minute must not replace the

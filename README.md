@@ -201,16 +201,19 @@ the work itself.
 
 A refusal is a state rather than a window. A guardrail or data-policy exclusion,
 a model the provider does not serve, an empty balance, or a workspace limit is
-recorded for three days (72 h) instead of the six-hour gate wait, because
-waiting does not clear it. A cause known only from a bare status or a bad
-credential gets ten minutes instead, because a gone model and a wrong base URL
-look the same there. The scope follows what failed: money and credentials name
-the provider's free or paid half, while a model, its endpoint pool, or a rate
-limit on it names that model alone. A provider that aggregates gives each model
-its own upstream pool, so one model's exclusion never parks its siblings, and
-that is why the record is a cooldown rather than a blacklist: a new upstream
-provider that matches the rules can appear before the window ends. A free 429 is
-the model's own for the same reason. Measured on 2026-11-17,
+recorded for three days (72 h) because waiting does not clear it. A cause known
+only from a bare status or a bad credential gets ten minutes instead, because a
+gone model and a wrong base URL look the same there. A rate limit stays a window
+and never leaves the minutes, whatever its strike count: free tiers limit
+strictly, and a model that has said 429 three times today is asking the walk to
+look elsewhere for now, not to leave the free pool for hours and make the tier
+pay. The scope follows what failed: money and credentials name the provider's
+free or paid half, while a model, its endpoint pool, or a rate limit on it names
+that model alone. A provider that aggregates gives each model its own upstream
+pool, so one model's exclusion never parks its siblings, and that is why the
+record is a cooldown rather than a blacklist: a new upstream provider that
+matches the rules can appear before the window ends. A free 429 is the model's
+own for the same reason. Measured on 2026-11-17,
 `opencode-go/longcat-2.5-free` answered 429 while `opencode-go/hy4-flash-free`
 and `opencode-go/beam-free` answered normally at the same moment. Cooling models
 are reordered to the back of the walk, never dropped.
