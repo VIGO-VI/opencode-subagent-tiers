@@ -199,16 +199,21 @@ retry stops when no untried model is left. The stall the hook removes is what
 teaches a conductor to stop delegating; returning at once lets it escalate or do
 the work itself.
 
-A refusal is a state rather than a window. A ZDR or data-policy exclusion, a
-privacy setting, an empty balance, or a model the provider does not serve is
+A refusal is a state rather than a window. A guardrail or data-policy exclusion,
+a model the provider does not serve, an empty balance, or a workspace limit is
 recorded for three days (72 h) instead of the six-hour gate wait, because
-waiting does not clear a setting. A cause known only from a bare status or a bad
+waiting does not clear it. A cause known only from a bare status or a bad
 credential gets ten minutes instead, because a gone model and a wrong base URL
-look the same there. The record names the model, or the provider's free or paid
-half: a free model's refusal never parks a paid sibling of the same provider,
-and the reverse. A free-tier 429 keeps its provider-wide key, since every free
-model on that provider draws on the same allowance. Cooling models are
-reordered to the back of the walk, never dropped.
+look the same there. The scope follows what failed: money and credentials name
+the provider's free or paid half, while a model, its endpoint pool, or a rate
+limit on it names that model alone. A provider that aggregates gives each model
+its own upstream pool, so one model's exclusion never parks its siblings, and
+that is why the record is a cooldown rather than a blacklist: a new upstream
+provider that matches the rules can appear before the window ends. A free 429 is
+the model's own for the same reason. Measured on 2026-11-17,
+`opencode-go/longcat-2.5-free` answered 429 while `opencode-go/hy4-flash-free`
+and `opencode-go/beam-free` answered normally at the same moment. Cooling models
+are reordered to the back of the walk, never dropped.
 
 Inside `consult`, each candidate gets a slice of the call budget rather than the
 whole deadline, so a slow second candidate cannot leave the last one "not

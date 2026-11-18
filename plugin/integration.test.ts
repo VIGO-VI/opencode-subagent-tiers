@@ -151,8 +151,8 @@ test("a paid ZDR refusal fails a lead-tier subagent over to a warm free sibling"
   assert.deepEqual(failed.decision, { retry: true, delay: 1_500 })
   const cooldown = host.storage.get("cooldown") as Record<string, { until: number }>
   const now = Date.now()
-  assert.ok(cooldown["provider:openrouter:paid"]!.until - now > 71 * 3_600_000, "paid half out for ~72 h")
-  assert.ok(cooldown["openrouter/paid-a"]!.until - now > 71 * 3_600_000, "the refused model is named")
+  assert.ok(cooldown["openrouter/paid-a"]!.until - now > 71 * 3_600_000, "the refused model is out for ~72 h")
+  assert.equal(cooldown["provider:openrouter:paid"], undefined, "its paid siblings are not parked")
   assert.equal(cooldown["provider:openrouter:free"], undefined, "the free half is not parked")
 
   const next = {
@@ -197,7 +197,7 @@ test("the model hook never changes provider, because OpenCode cannot resolve one
   assert.deepEqual(event.model, { providerID: "opencode-go", id: "longcat-free" })
 })
 
-test("a free refusal whose siblings are out is saved by the same provider's paid floor", async () => {
+test("free models that are both out are saved by the same provider's paid floor", async () => {
   const host = harness(
     {
       ...baseTiers,
@@ -222,38 +222,39 @@ test("a free refusal whose siblings are out is saved by the same provider's paid
   )
   const { resolve, retry } = await start(host)
 
-  const first = {
-    sessionID: "child",
-    agent: "swarm-worker",
-    kind: "primary",
-    model: { providerID: "openrouter", id: "free-a" },
+  const ask = async () => {
+    const event = {
+      sessionID: "child",
+      agent: "swarm-worker",
+      kind: "primary",
+      model: { providerID: "openrouter", id: "free-a" },
+    }
+    await resolve(event)
+    return event.model as { providerID: string; id: string }
   }
-  await resolve(first)
-  assert.deepEqual(first.model, { providerID: "openrouter", id: "free-a" })
+  const refuse = async (id: string) => {
+    const event = {
+      sessionID: "child",
+      agent: "swarm-worker",
+      model: { providerID: "openrouter", id },
+      error: { type: "provider.error", message: ZDR },
+      attempt: 1,
+      decision: { retry: true, delay: 15 * 60_000 },
+    }
+    await retry(event)
+    assert.deepEqual(event.decision, { retry: true, delay: 1_500 })
+  }
 
-  const failed = {
-    sessionID: "child",
-    agent: "swarm-worker",
-    model: { providerID: "openrouter", id: "free-a" },
-    error: { type: "provider.error", message: ZDR },
-    attempt: 1,
-    decision: { retry: true, delay: 15 * 60_000 },
-  }
-  await retry(failed)
-  assert.deepEqual(failed.decision, { retry: true, delay: 1_500 })
+  assert.deepEqual(await ask(), { providerID: "openrouter", id: "free-a" })
+  await refuse("free-a")
+  // The sibling free model has its own endpoint pool, so it is still served.
+  assert.deepEqual(await ask(), { providerID: "openrouter", id: "free-b" })
+  await refuse("free-b")
 
   const cooldown = host.storage.get("cooldown") as Record<string, { until: number }>
-  assert.equal(cooldown["provider:openrouter:paid"], undefined)
-  assert.ok((cooldown["provider:openrouter:free"]?.until ?? 0) > Date.now() + 71 * 3_600_000)
-
-  const next = {
-    sessionID: "child",
-    agent: "swarm-worker",
-    kind: "primary",
-    model: { providerID: "openrouter", id: "free-a" },
-  }
-  await resolve(next)
-  assert.deepEqual(next.model, { providerID: "openrouter", id: "paid-floor" })
+  assert.equal(cooldown["provider:openrouter:paid"], undefined, "only the free models are out")
+  assert.equal(cooldown["provider:openrouter:free"], undefined, "even the free half is not parked")
+  assert.deepEqual(await ask(), { providerID: "openrouter", id: "paid-floor" })
 })
 
 test("consult walks past a ZDR refusal to the next candidate and records it", async () => {
@@ -293,7 +294,7 @@ test("consult walks past a ZDR refusal to the next candidate and records it", as
   assert.equal(result.metadata.model, "openrouter/free-b")
   assert.match(result.content, /openrouter\/free-b/)
   const cooldown = host.storage.get("cooldown") as Record<string, { until: number }>
-  assert.ok((cooldown["provider:openrouter:paid"]?.until ?? 0) > Date.now() + 71 * 3_600_000)
+  assert.ok((cooldown["openrouter/paid-a"]?.until ?? 0) > Date.now() + 71 * 3_600_000)
 })
 
 test("the paid floor moves to the next paid model when the cheapest is rate limited", async () => {
@@ -307,14 +308,13 @@ test("the paid floor moves to the next paid model when the cheapest is rate limi
             ratio: [0, 0.05],
             prefer: "quality",
             limit: 4,
-            rank: { "*free-a*": 90, "*free-b*": 80, "*paid-cheap*": 70, "*paid-next*": 60 },
+            rank: { "*free-a*": 90, "*paid-cheap*": 70, "*paid-next*": 60 },
           },
         },
       },
     },
     [
       model("openrouter", "free-a", 0),
-      model("openrouter", "free-b", 0),
       model("openrouter", "paid-cheap", 1),
       model("openrouter", "paid-next", 2),
       model("root", "base", 10),

@@ -2,11 +2,12 @@
  * Provider failures the router must act on, and the cooldown a strike writes.
  *
  * A rate limit is a window: the model answers again on its own, so the short
- * doubling backoff is right. A refusal is a state - an account setting, a model
- * the provider does not serve, or an empty balance - and waiting six hours does
- * not change it. The wait and the key differ by scope: a guardrail or balance
- * refusal belongs to the provider's free or paid half, while a model that is
- * not served belongs to that model alone.
+ * doubling backoff is right. A refusal is a state - a setting, a model the
+ * provider does not serve, or an empty balance - and waiting six hours does not
+ * change it. The scope follows what failed: money and credentials cover the
+ * provider's free or paid half, while a model, its endpoint pool or a rate limit
+ * on it belongs to that model alone. A provider that aggregates gives each model
+ * its own endpoints, so one model's exclusion cannot speak for its siblings.
  */
 
 import { modelKey, type ModelRef } from "./select.ts"
@@ -38,18 +39,14 @@ export type Refusal = {
 }
 
 /**
- * Account-wide causes. These are checked before the model patterns and before
- * the rate-limit patterns: an OpenRouter guardrail message also contains
- * "endpoints", and "insufficient balance" is an account state even though some
- * providers phrase it with the word quota.
+ * Account-wide causes: money and credentials. These are checked before the
+ * model patterns and before the rate-limit patterns, because "insufficient
+ * balance" is an account state even though some providers phrase it with the
+ * word quota. Nothing about a model belongs here: a provider that aggregates
+ * gives each model its own upstream pool, so one model's guardrail, data
+ * policy or training terms say nothing about its siblings.
  */
 const PROVIDER_REFUSAL: ReadonlyArray<readonly [RegExp, string]> = [
-  [/\bzdr\b|zero[\s-]+data[\s-]+retention/i, "ZDR"],
-  [/guardrail/i, "guardrail"],
-  [/data[\s-]+polic(?:y|ies)/i, "data policy"],
-  [/trains on (?:request|your) data/i, "trains on request data"],
-  [/settings\/privacy/i, "privacy setting"],
-  [/not enabled for this account/i, "account not enabled"],
   [/insufficient (?:balance|credit)/i, "insufficient balance"],
   [/payment required|billing (?:issue|problem)/i, "payment required"],
   // opencode's own budget errors. The type is exact, but the wording is also
@@ -61,13 +58,20 @@ const PROVIDER_REFUSAL: ReadonlyArray<readonly [RegExp, string]> = [
 ]
 
 /**
- * Model-only causes. "no endpoints" is checked here rather than with the
- * account causes: on its own it means this model id is not served, and a whole
- * provider must not be parked because one id is missing. The guardrail check
- * above runs first, so the multi-model OpenRouter form still scopes to the
- * provider.
+ * Model-only causes: this model, or the endpoints it currently has. A guardrail
+ * or data-policy exclusion removes this model's matching endpoints for now, and
+ * a new upstream provider that satisfies the rules may appear later, so the
+ * record is a cooldown on the model and never a blacklist. Sibling models have
+ * their own endpoint pools and stay usable, which is why none of these may park
+ * the provider.
  */
 const MODEL_REFUSAL: ReadonlyArray<readonly [RegExp, string]> = [
+  [/\bzdr\b|zero[\s-]+data[\s-]+retention/i, "ZDR"],
+  [/guardrail/i, "guardrail"],
+  [/data[\s-]+polic(?:y|ies)/i, "data policy"],
+  [/trains on (?:request|your) data/i, "trains on request data"],
+  [/settings\/privacy/i, "privacy setting"],
+  [/not enabled for this account/i, "model not enabled"],
   [/model[\s_-]*unavailable/i, "model unavailable"],
   [/not enabled for this model/i, "model not enabled"],
   [/model[\s_-]*not[\s_-]*found|no such model|does not exist/i, "model not found"],
@@ -170,16 +174,16 @@ export function providerKey(providerID: string, price: number): string {
 
 /**
  * The cooldown keys one failure writes. A model keeps its own key so a sibling
- * is unaffected; a provider-wide refusal writes only the provider key for the
- * class (free or paid) that failed; and a free-tier rate limit writes both,
- * because that allowance is shared by every free model on the provider.
+ * is unaffected, and a rate limit is always the model's own: on this machine
+ * `longcat-2.5-free` answered 429 while `hy4-flash-free` and `beam-free`
+ * answered normally, so a limit on one model says nothing about the others.
+ * Only an account-wide refusal, money or credentials, reaches the provider key
+ * for the class (free or paid) that failed.
  */
 export function cooldownKeys(refusal: Refusal, model: ModelRef, price: number): string[] {
   if (refusal.kind === "none") return []
   const key = modelKey(model)
-  if (refusal.kind === "rate-limit") {
-    return price === 0 ? [key, providerKey(model.providerID, price)] : [key]
-  }
+  if (refusal.kind === "rate-limit") return [key]
   // The refused model is always named, even when the whole class is out, so the
   // trace and the caller's notice point at the model that actually failed.
   return refusal.scope === "provider" ? [key, providerKey(model.providerID, price)] : [key]

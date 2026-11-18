@@ -22,48 +22,43 @@ const ZDR =
   "We removed them for the following reasons: ZDR violation (account settings): 1 endpoint excluded; " +
   "configurable at https://openrouter.ai/settings/privacy"
 
-test("a ZDR guardrail message is a provider refusal with a three-day wait", () => {
+test("a ZDR guardrail message is a model refusal with a three-day wait", () => {
   const refusal = classifyProviderError({ type: "provider.error", message: ZDR })
   assert.equal(refusal.kind, "refusal")
-  assert.equal(refusal.scope, "provider")
+  assert.equal(refusal.scope, "model")
   assert.equal(refusal.reason, "ZDR")
   assert.equal(REFUSAL_COOLDOWN_MS, 259_200_000)
   assert.equal(cooldownFor(refusal), REFUSAL_COOLDOWN_MS)
-  assert.deepEqual(cooldownKeys(refusal, paid, 5), [
-    "console-openrouter/nex-agi/nex-n2.6",
-    "provider:console-openrouter:paid",
-  ])
+  // One model's endpoint pool is excluded. Its siblings have their own pools, so
+  // only this model is named and the provider half stays warm.
+  assert.deepEqual(cooldownKeys(refusal, paid, 5), ["console-openrouter/nex-agi/nex-n2.6"])
 })
 
-test("a free refusal strikes only :free and leaves the paid sibling warm", () => {
+test("a free refusal leaves its free sibling and the paid half warm", () => {
   const refusal = classifyProviderError({ message: ZDR })
   const freeKeys = cooldownKeys(refusal, free, 0)
   const paidKeys = cooldownKeys(refusal, paid, 5)
-  assert.deepEqual(freeKeys, [
-    "console-openrouter/inclusionai/ling-3.2-flash:free",
-    "provider:console-openrouter:free",
-  ])
-  assert.deepEqual(paidKeys, [
-    "console-openrouter/nex-agi/nex-n2.6",
-    "provider:console-openrouter:paid",
-  ])
+  assert.deepEqual(freeKeys, ["console-openrouter/inclusionai/ling-3.2-flash:free"])
+  assert.deepEqual(paidKeys, ["console-openrouter/nex-agi/nex-n2.6"])
 
   const now = 1_000
-  const freeOut = { [freeKeys[1]!]: { until: now + REFUSAL_COOLDOWN_MS } }
+  const freeOut = { [freeKeys[0]!]: { until: now + REFUSAL_COOLDOWN_MS } }
+  const sibling = { providerID: "console-openrouter", id: "nvidia/nemotron-3.5-lightning:free" }
   assert.equal(isCooling(freeOut, free, 0, now), true)
+  assert.equal(isCooling(freeOut, sibling, 0, now), false, "a sibling free model is not parked")
   assert.equal(isCooling(freeOut, paid, 5, now), false)
 })
 
-test("a paid refusal strikes only :paid and leaves the free sibling warm", () => {
+test("a paid refusal leaves the free sibling warm", () => {
   const refusal = classifyProviderError({ message: ZDR })
   const paidKeys = cooldownKeys(refusal, paid, 5)
   const now = 1_000
-  const paidOut = { [paidKeys[1]!]: { until: now + REFUSAL_COOLDOWN_MS } }
+  const paidOut = { [paidKeys[0]!]: { until: now + REFUSAL_COOLDOWN_MS } }
   assert.equal(isCooling(paidOut, paid, 5, now), true)
   assert.equal(isCooling(paidOut, free, 0, now), false)
 })
 
-test("an unserved model is a model refusal, but the same words with a guardrail are provider-wide", () => {
+test("an unserved model is a model refusal, and so is the same words with a guardrail", () => {
   const unavailable = classifyProviderError(new Error("Model unavailable: opencode/iceman-free"))
   assert.equal(unavailable.kind, "refusal")
   assert.equal(unavailable.scope, "model")
@@ -76,8 +71,11 @@ test("an unserved model is a model refusal, but the same words with a guardrail 
   const noEndpoints = classifyProviderError(new Error("No endpoints found for opencode/iceman-free"))
   assert.equal(noEndpoints.scope, "model")
 
+  // The OpenRouter wording names the endpoints of one model too: a new upstream
+  // provider that matches the rules can appear later, so the model cools and its
+  // siblings are untouched.
   const guarded = classifyProviderError({ message: "0 endpoints out of 1 requested are available: guardrail" })
-  assert.equal(guarded.scope, "provider")
+  assert.equal(guarded.scope, "model")
 })
 
 test("an empty balance is a provider refusal of the paid half", () => {
@@ -94,12 +92,20 @@ test("an empty balance is a provider refusal of the paid half", () => {
   ])
 })
 
-test("a rate limit stays a rate limit and only a free one reaches the provider", () => {
+test("a rate limit strikes only the model that answered it", () => {
   const limited = classifyProviderError({ status: 429, message: "429 Too Many Requests" })
   assert.equal(limited.kind, "rate-limit")
   assert.equal(cooldownFor(limited), undefined)
-  assert.deepEqual(cooldownKeys(limited, free, 0), ["console-openrouter/inclusionai/ling-3.2-flash:free", "provider:console-openrouter:free"])
+  assert.deepEqual(cooldownKeys(limited, free, 0), ["console-openrouter/inclusionai/ling-3.2-flash:free"])
   assert.deepEqual(cooldownKeys(limited, paid, 5), ["console-openrouter/nex-agi/nex-n2.6"])
+
+  // Measured on 2026-11-17: longcat-2.5-free answered 429 while hy4-flash-free
+  // and beam-free answered normally on the same provider, so a free limit is the
+  // model's own and may not park the free half.
+  const sibling = { providerID: "console-openrouter", id: "nvidia/nemotron-3.5-lightning:free" }
+  const live = { [cooldownKeys(limited, free, 0)[0]!]: { until: Date.now() + 60_000 } }
+  assert.equal(isCooling(live, free, 0), true)
+  assert.equal(isCooling(live, sibling, 0), false)
 
   const typed = classifyProviderError({ type: "provider.rate-limit", message: "slow down" })
   assert.equal(typed.kind, "rate-limit")
@@ -108,7 +114,7 @@ test("a rate limit stays a rate limit and only a free one reaches the provider",
 test("a guardrail message that also says quota is not mistaken for a rate limit", () => {
   const refusal = classifyProviderError({ message: "guardrail restriction: free quota exceeded for this account" })
   assert.equal(refusal.kind, "refusal")
-  assert.equal(refusal.scope, "provider")
+  assert.equal(refusal.scope, "model")
 })
 
 test("an ordinary provider error is not a refusal", () => {
@@ -145,7 +151,7 @@ test("a lead-tier subagent gets a retry and a strike, where the old worker-only 
   assert.equal(plan.act, true)
   if (!plan.act) return
   assert.equal(plan.retry, true)
-  assert.deepEqual(plan.keys, ["console-openrouter/nex-agi/nex-n2.6", "provider:console-openrouter:paid"])
+  assert.deepEqual(plan.keys, ["console-openrouter/nex-agi/nex-n2.6"])
   assert.equal(plan.fixedMs, REFUSAL_COOLDOWN_MS)
   assert.equal(plan.delay, 1_500)
 })
@@ -222,10 +228,10 @@ test("an oversized prompt does not cool a healthy model", () => {
 
 test("every phrase the old gate matched still classifies", () => {
   const cases: Array<[string, "provider" | "model"]> = [
-    ["This model trains on request data", "provider"],
-    ["not enabled for this account", "provider"],
+    ["This model trains on request data", "model"],
+    ["not enabled for this account", "model"],
     ["not enabled for this model", "model"],
-    ["see settings/privacy", "provider"],
+    ["see settings/privacy", "model"],
     ["Model unavailable: opencode/iceman-free", "model"],
   ]
   for (const [message, scope] of cases) {
@@ -326,13 +332,13 @@ test("an id-less deprecated model still classifies", () => {
   assert.equal(refusal.scope, "model")
 })
 
-test("an account refusal wins when the body also mentions a context length", () => {
+test("a guardrail refusal wins when the body also mentions a context length", () => {
   const both = classifyProviderError({
     status: 400,
     message: "context length exceeded; 0 endpoints out of 1 requested: guardrail restrictions",
   })
   assert.equal(both.kind, "refusal")
-  assert.equal(both.scope, "provider")
+  assert.equal(both.scope, "model")
 })
 
 test("a model's own permission denial is model-scoped, and a bare 401 is account-wide", () => {
