@@ -18,10 +18,28 @@ else
   echo "node not found: agent models were not refreshed"
 fi
 # An agent without a model inherits the conductor's, which is the opposite of
-# the point. Say so loudly rather than install quietly.
+# the point — except for an anchored tier, which asks for exactly that and then
+# lets the router re-pick within the caller's own price band. Say so loudly for
+# everything else rather than install quietly.
+anchored=$(node - "$here/tiers.json" <<'NODE' 2>/dev/null
+const fs = require("node:fs")
+const tiers = JSON.parse(fs.readFileSync(process.argv[2], "utf8"))
+const spec = tiers.tiers ?? {}
+console.log(
+  Object.entries(tiers.agents ?? {})
+    .filter(([, name]) => spec[name] && spec[name].anchored)
+    .map(([agent]) => `${agent}.md`)
+    .join(" "),
+)
+NODE
+)
 for file in "$here"/agents/*.md; do
+  base=$(basename "$file")
+  case " $anchored " in
+    *" $base "*) continue ;;
+  esac
   if ! grep -q "^model:" "$file"; then
-    echo "WARNING: $(basename "$file") has no model. Run node scripts/models.mjs with a server running."
+    echo "WARNING: $base has no model. Run node scripts/models.mjs with a server running."
   fi
 done
 

@@ -9,28 +9,50 @@ one. Everything below explains how.
 
 ## Delegation
 
-Delegation is the default, not a treat. If a step can be handed to a worker, hand
-it over, because the worker runs on a free model and your own context is the
-expensive part of the session.
+Delegation is the default, not a treat. The reason is your context window, not
+the bill: a fact you read and keep costs you tokens on every later turn, while
+the same fact in a child costs you once, as a report. So the question is never
+"can I afford a subagent" but "do I need this text in front of me again".
 
-- Send self-contained reading to a worker: locating code, quoting a section,
-  running one check, counting call sites, summarising a document. Keep synthesis
-  and judgement for the conductor.
-- Prefer two or three small workers over one large one. A worker that has to read
-  widely is a worker that will summarise badly.
-- Worker ladder, cheapest first. Start every job with `swarm-worker`, which runs
-  on a free model. Escalate to `swarm-worker-code`, which costs money, only when
-  the free report came back missing its evidence or contradicting itself. A
-  conductor that opens with the paid worker has paid for a check it never
-  needed.
-- The only good reasons to do a step yourself: it is one tool call, the fact is
-  already in context, or no cheaper tier can do it well. Anything else is a
-  worker's job.
+**`swarm-peer` is the default delegate.** It runs in your own price band, on a
+model that may be better suited to the task than yours, with the same tools and
+the same ability to reach a conclusion. It starts with a clean context instead
+of your history. There is no intelligence tax to weigh, so anything you would
+only summarise goes to a peer: bulky reading, a self-contained piece of
+implementation, a question whose answer matters more than its evidence.
+
+**Keep the work inline only when you need the context itself.** That is one of
+three cases: you will quote the text exactly, you will patch it, or you will
+reason across it over several steps. A peer's summary cannot stand in for the
+bytes when the bytes are the deliverable. If none of those apply, delegating is
+not a trade — it is strictly cheaper for you.
+
+**`swarm-worker` is for the mechanical tail.** Greps, counts, single lookups,
+"which line defines X". It runs on a free model and is billed accordingly, so
+give it the narrow question and expect a narrow answer. Do not hand it a step
+that needs a judgement it cannot make.
+
+- Prefer two or three small peers over one large one. A child that has to read
+  widely is a child that will summarise badly.
+- Name the sector when you spawn a peer: the files or directory you expect it to
+  change. A peer may read anywhere, but it stops before editing outside that
+  sector and asks you first, so two children cannot collide over the same tree.
+  Two peers on one sector is your mistake, not theirs.
+- Ladder, when a step is uncertain: `swarm-peer` when judgement matters,
+  `swarm-worker` when the step is purely mechanical. Escalate to
+  `swarm-worker-code` only when a cheap report came back thin or contradicted
+  itself.
+- If a spawn answers `Unknown agent: swarm-peer`, the install is older than this
+  file. Do not retry it and do not file a bug: use `swarm-worker-code` for that
+  step, say so in one line, and the agent appears for every session started after
+  the next restart.
+- Do a step yourself when it is one tool call, when the fact is already in your
+  context, or when you need the material itself. Those are the only three.
 - Concrete triggers, so this is not a matter of taste: before your second file
   read or second shell command in one turn, hand the rest of that exploration to
-  a worker. If a turn reaches six tool calls without a worker, stop and spawn
-  one. A conductor that reads six files itself has spent more than the whole
-  fan-out would have.
+  a peer. If a turn reaches six tool calls without having spawned a child, stop
+  and spawn one. A conductor that reads six files itself has paid for them again
+  on every later turn.
 - A top-level session has no parent, so `handoff` there skips its skim by design.
   End a top-level turn with a normal reply after handing the work to workers.
 - Spawn before you read: a conductor that has opened a file first has already

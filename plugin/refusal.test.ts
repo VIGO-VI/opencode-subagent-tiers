@@ -2,6 +2,7 @@ import assert from "node:assert/strict"
 import { test } from "node:test"
 
 import {
+  MONEY_REFUSAL_MS,
   REFUSAL_COOLDOWN_MS,
   SOFT_REFUSAL_MS,
   classifyProviderError,
@@ -278,7 +279,20 @@ test("a cause that lives only in the error type or the status still classifies",
     assert.equal(soft.scope, "model")
     assert.equal(cooldownFor(soft), SOFT_REFUSAL_MS, `${status} must not park a model for three days`)
   }
-  assert.equal(cooldownFor(classifyProviderError({ status: 402, message: "Payment Required" })), REFUSAL_COOLDOWN_MS)
+  // Money is a state that someone can change, so it expires on its own timer: a
+  // 402 or an empty balance is re-checked every few hours, which lets a top-up
+  // take effect the same day instead of after three days of being parked.
+  assert.equal(cooldownFor(classifyProviderError({ status: 402, message: "Payment Required" })), MONEY_REFUSAL_MS)
+  assert.equal(
+    cooldownFor(
+      classifyProviderError({
+        message:
+          "Insufficient balance. Top up at https://opencode.ai/console/org_x/billing?credits=1. OpenCode Go covers only requests to the OpenCode Go provider.",
+      }),
+    ),
+    MONEY_REFUSAL_MS,
+  )
+  assert.equal(MONEY_REFUSAL_MS, 14_400_000)
   assert.equal(classifyProviderError({ status: 529, message: "Service Unavailable" }).kind, "rate-limit")
 })
 
