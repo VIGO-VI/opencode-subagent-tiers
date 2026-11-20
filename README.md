@@ -176,19 +176,19 @@ OPENCODE_CONFIG_DIR=~/.local/share/vigo-agent/.config/opencode ./install.sh
 ```
 
 A per-request reminder covers the case instructions miss. A `context` hook appends
-one sentence to the system prompt of a session that has made five requests since
+one sentence to the system prompt of a session that has run five tool calls since
 it last spawned a subagent, and only for agents whose permissions allow spawning,
-which is read from the permission rules rather than a list of names. It starts on
-the second request and comes back every time the session drifts into working
-alone again, because the interval is measured from the last spawn instead of
-being a one-shot budget. `nudge: 5` sets the interval, `nudge: false` turns it
-off.
+which is read from the permission rules rather than a list of names. The count is
+tool calls, not turns, so a long turn of reads is visible instead of looking like
+one request. The interval is measured from the last spawn rather than being a
+one-shot budget, and at twice the interval the sentence stops suggesting and says
+to stop reading inline. `nudge: 5` sets the interval, `nudge: false` and
+`nudge: 0` both turn it off.
 
-It is cache-safe by construction: the sentence is identical every time, so it
-extends the request tail instead of rewriting the prefix, and the prompt cache
-still matches everything before it. The tail changes twice per drift, when the
-reminder appears and when a spawn removes it, which is two cache misses per cycle
-instead of one per request.
+The named count costs some cache: the tail changes as the number grows, where the
+old fixed sentence changed only when the reminder appeared. That is the trade for
+a reminder that can say how far the session has drifted, and the prefix still
+matches up to it.
 
 A rate-limited or refused subagent fails fast. A `retry` hook acts on every
 subagent tier (`swarm-peer`, `swarm-worker`, `swarm-worker-code`, `swarm-lead`,
@@ -687,8 +687,8 @@ $ npm run typecheck && echo TYPECHECK OK
 TYPECHECK OK
 
 $ npm test
-ℹ tests 160
-ℹ pass 160
+ℹ tests 167
+ℹ pass 167
 ℹ fail 0
 
 $ grep "tier-router:" /tmp/tier-test/run5.err
