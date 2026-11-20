@@ -38,7 +38,7 @@ offer_repair() {
         fi
       done
       echo "moved it aside; the backup is $db.invalid-$stamp"
-      node "$here/scripts/models.mjs" || echo "the catalog is still unreadable; see Troubleshooting in README.md"
+      node "$here/scripts/models.mjs" --dir "$config_dir/agents" || echo "the catalog is still unreadable; see Troubleshooting in README.md"
       ;;
     *)
       echo "left it alone; see Troubleshooting in README.md"
@@ -46,11 +46,19 @@ offer_repair() {
   esac
 }
 
-# Resolve each agent's model from the live catalog before copying, so no agent
-# file carries a hand-pinned model that can go stale.
+mkdir -p "$config_dir/agents"
+for file in "$here"/agents/*.md; do
+  cp "$file" "$config_dir/agents/$(basename "$file")"
+  echo "installed agent $(basename "$file")"
+done
+
+# The checkout names no model. The installed copy gets one resolved from the
+# live catalog, so the resolver has a provider to work within. If that fails the
+# copy keeps no model line and inherits the conductor's, which still works with
+# whatever providers exist in three years as well as today.
 if command -v node >/dev/null 2>&1; then
   refresh=0
-  node "$here/scripts/models.mjs" || refresh=$?
+  node "$here/scripts/models.mjs" --dir "$config_dir/agents" || refresh=$?
   if [ "$refresh" -eq 2 ]; then
     # 2 is the storage failure specifically, so the installer reacts to the one
     # case it can help with instead of pattern-matching a log line.
@@ -60,42 +68,11 @@ if command -v node >/dev/null 2>&1; then
       echo "no terminal to ask on, so the database was left alone; see Troubleshooting in README.md"
     fi
   elif [ "$refresh" -ne 0 ]; then
-    echo "model refresh skipped, agent files keep their last model"
+    echo "no model resolved; installed agents inherit the conductor's model"
   fi
 else
-  echo "node not found: agent models were not refreshed"
+  echo "node not found; installed agents inherit the conductor's model"
 fi
-# An agent without a model inherits the conductor's, which is the opposite of
-# the point — except for an anchored tier, which asks for exactly that and then
-# lets the router re-pick within the caller's own price band. Say so loudly for
-# everything else rather than install quietly.
-anchored=$(node - "$here/tiers.json" <<'NODE' 2>/dev/null
-const fs = require("node:fs")
-const tiers = JSON.parse(fs.readFileSync(process.argv[2], "utf8"))
-const spec = tiers.tiers ?? {}
-console.log(
-  Object.entries(tiers.agents ?? {})
-    .filter(([, name]) => spec[name] && spec[name].anchored)
-    .map(([agent]) => `${agent}.md`)
-    .join(" "),
-)
-NODE
-)
-for file in "$here"/agents/*.md; do
-  base=$(basename "$file")
-  case " $anchored " in
-    *" $base "*) continue ;;
-  esac
-  if ! grep -q "^model:" "$file"; then
-    echo "WARNING: $base has no model. Run node scripts/models.mjs with a server running."
-  fi
-done
-
-mkdir -p "$config_dir/agents"
-for file in "$here"/agents/*.md; do
-  cp "$file" "$config_dir/agents/$(basename "$file")"
-  echo "installed agent $(basename "$file")"
-done
 
 node - "$config" "$here" <<'NODE'
 const fs = require("node:fs")

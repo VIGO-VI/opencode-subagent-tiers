@@ -39,7 +39,7 @@ function validTiers() {
   }
 }
 
-function agent({ description = "an agent", mode = "subagent", model = "p/m" } = {}) {
+function agent({ description = "an agent", mode = "subagent", model = null } = {}) {
   const line = model === null ? "" : `model: ${model}\n`
   return `---\ndescription: ${description}\nmode: ${mode}\n${line}---\n\nBody.\n`
 }
@@ -206,18 +206,9 @@ expectProblem(
 )
 
 expectProblem(
-  "an anchored tier must not pin a model",
-  (dir) =>
-    editTiers(dir, (tiers) => {
-      tiers.tiers.advisor.anchored = true
-    }),
-  /anchored, so it must not carry a model line/,
-)
-
-expectProblem(
-  "a non-anchored tier must carry a model",
-  (dir) => writeText(dir, "agents/one.md", agent({ model: null })),
-  /not anchored, so it needs a model line/,
+  "an agent that names a model is rejected",
+  (dir) => writeText(dir, "agents/one.md", agent({ model: "p/m" })),
+  /must not name a model/,
 )
 
 expectProblem(

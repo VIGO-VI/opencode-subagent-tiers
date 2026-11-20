@@ -213,22 +213,17 @@ export function validate(root) {
     modes.set(id, mode)
     spawners.set(id, allowedSubagents(front))
 
-    // The invariant the installer relies on: a model is optional only when the
-    // tier is anchored, because an anchored tier resolves the model at runtime
-    // and a model line would pin it to a provider chosen at install time.
+    // The checkout names no model. The resolver chooses one per request, and a
+    // committed model line would be a literal that goes stale. Install writes a
+    // resolved pin into the installed copy, where it selects a provider.
     const tierName = agents[id]
     if (!graphUsable) continue
     if (!tierName) {
-      fail(`${at}: not listed in tiers.json agents, so it never gets a model and is never routed`)
+      fail(`${at}: not listed in tiers.json agents, so it is never routed`)
       continue
     }
-    const anchored = spec[tierName]?.anchored === true
-    const hasModel = /^model:\s*\S/m.test(front)
-    if (anchored && hasModel) {
-      fail(`${at}: tier "${tierName}" is anchored, so it must not carry a model line`)
-    }
-    if (!anchored && !hasModel) {
-      fail(`${at}: tier "${tierName}" is not anchored, so it needs a model line (run scripts/models.mjs)`)
+    if (/^model:\s*\S/m.test(front)) {
+      fail(`${at}: must not name a model, because install resolves it into the installed copy`)
     }
   }
 

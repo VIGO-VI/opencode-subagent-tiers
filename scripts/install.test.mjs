@@ -113,6 +113,10 @@ function agentModel(fixture, name) {
   return agentText(fixture, name).match(/^model:\s*(.+)$/m)?.[1]?.trim()
 }
 
+function sourceAgentModel(fixture, name) {
+  return readFileSync(join(fixture.repo, "agents", name), "utf8").match(/^model:\s*(.+)$/m)?.[1]?.trim()
+}
+
 function cleanup(fixture) {
   rmSync(fixture.dir, { recursive: true, force: true })
 }
@@ -250,30 +254,30 @@ test("SUBAGENT_DEPTH overrides the derived ceiling", () => {
   }
 })
 
-test("an unreachable catalog skips the refresh and still installs", () => {
+test("an unreachable catalog leaves the installed agent model-free and still installs", () => {
   const fixture = setup()
   try {
     writeFileSync(fixture.catalog, "")
     const result = install(fixture)
     assert.equal(result.status, 0, result.stderr)
-    assert.match(result.stdout, /model refresh skipped/)
-    // The checked-in models are what the user gets when the catalog is offline.
-    assert.ok(agentModel(fixture, "swarm-worker.md"))
+    assert.match(result.stdout, /installed agents inherit the conductor's model/)
+    // No catalog means no pin, and no pin means inheritance, which works with
+    // whatever providers exist rather than a checked-in model that may not.
+    assert.equal(agentModel(fixture, "swarm-worker.md"), undefined)
     assert.equal(readConfig(fixture).default_agent, "swarm-lead")
   } finally {
     cleanup(fixture)
   }
 })
 
-test("a non-anchored agent without a model is called out at install time", () => {
+test("the checkout keeps no model line after an install", () => {
   const fixture = setup()
   try {
-    const path = join(fixture.repo, "agents", "swarm-worker.md")
-    writeFileSync(path, readFileSync(path, "utf8").replace(/^model: .*\n/m, ""))
-    writeFileSync(fixture.catalog, "")
     const result = install(fixture)
     assert.equal(result.status, 0, result.stderr)
-    assert.match(result.stdout, /WARNING: swarm-worker\.md has no model/)
+    // The pin goes to the copy, never to the source tree.
+    assert.ok(agentModel(fixture, "swarm-worker.md"))
+    assert.equal(sourceAgentModel(fixture, "swarm-worker.md"), undefined)
   } finally {
     cleanup(fixture)
   }
