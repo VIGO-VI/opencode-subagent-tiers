@@ -151,6 +151,47 @@ export function validate(root) {
     fail(`agents/: ${error.message}`)
   }
 
+  /** A YAML scalar as written, without the quotes around a wildcard. */
+  const bare = (value) => value.trim().replace(/^["']|["']$/g, "")
+
+  /**
+   * The agents a frontmatter block allows as subagents, ignoring the `"*"`
+   * default. This mirrors how the permission list is read at runtime: a deny on
+   * `*` sets the default, and each allow adds one name to it.
+   */
+  function allowedSubagents(front) {
+    const allowed = []
+    let rule
+    for (const raw of front.split("\n")) {
+      const line = raw.trim()
+      const action = line.match(/^-\s*action:\s*(.+)$/)
+      if (action) {
+        rule = { action: bare(action[1]), resource: undefined, effect: undefined }
+        continue
+      }
+      if (!rule) continue
+      const resource = line.match(/^resource:\s*(.+)$/)
+      if (resource) {
+        rule.resource = bare(resource[1])
+        continue
+      }
+      const effect = line.match(/^effect:\s*(.+)$/)
+      if (effect) {
+        rule.effect = bare(effect[1])
+        if (rule.action === "subagent" && rule.effect === "allow" && rule.resource && rule.resource !== "*") {
+          allowed.push(rule.resource)
+        }
+        rule = undefined
+      }
+    }
+    return allowed
+  }
+
+  // Who may spawn whom. An agent no conductor can reach is dead weight, and the
+  // failure it causes is a permission error at runtime rather than at install.
+  const spawners = new Map()
+  const modes = new Map()
+
   for (const file of files) {
     const id = file.replace(/\.md$/, "")
     const text = read(`agents/${file}`)
@@ -169,6 +210,8 @@ export function validate(root) {
     if (mode !== "subagent" && mode !== "all") {
       fail(`${at}: mode must be subagent or all, got ${JSON.stringify(mode)}`)
     }
+    modes.set(id, mode)
+    spawners.set(id, allowedSubagents(front))
 
     // The invariant the installer relies on: a model is optional only when the
     // tier is anchored, because an anchored tier resolves the model at runtime
@@ -186,6 +229,34 @@ export function validate(root) {
     }
     if (!anchored && !hasModel) {
       fail(`${at}: tier "${tierName}" is not anchored, so it needs a model line (run scripts/models.mjs)`)
+    }
+  }
+
+  // An agent is usable only if a session the user can actually start can reach
+  // it. The entry points are the `mode: all` agents, which is what a new session
+  // runs as; a self-edge proves nothing, so this is a walk, not a set union.
+  // Without an entry point there is no session tree to speak of, so the rule
+  // would be guessing and is skipped instead.
+  const entryPoints = files
+    .map((file) => file.replace(/\.md$/, ""))
+    .filter((id) => modes.get(id) === "all")
+  const reachable = new Set()
+  const queue = [...entryPoints]
+  while (queue.length > 0) {
+    const id = queue.shift()
+    for (const target of spawners.get(id) ?? []) {
+      if (reachable.has(target)) continue
+      reachable.add(target)
+      queue.push(target)
+    }
+  }
+  if (entryPoints.length > 0 && Array.from(spawners.values()).some((list) => list.length > 0)) {
+    for (const file of files) {
+      const id = file.replace(/\.md$/, "")
+      if (modes.get(id) === "all") continue
+      if (!reachable.has(id)) {
+        fail(`agents/${file}: no entry point reaches it as a subagent, so no conductor can spawn it`)
+      }
     }
   }
 
