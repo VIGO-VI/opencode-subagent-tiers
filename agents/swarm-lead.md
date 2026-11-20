@@ -11,6 +11,9 @@ permissions:
     resource: swarm-worker
     effect: allow
   - action: subagent
+    resource: swarm-peer
+    effect: allow
+  - action: subagent
     resource: swarm-worker-code
     effect: allow
   - action: subagent

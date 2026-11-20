@@ -6,6 +6,12 @@ permissions:
   - action: subagent
     resource: "*"
     effect: deny
+  - action: subagent
+    resource: swarm-peer
+    effect: allow
+  - action: subagent
+    resource: swarm-worker
+    effect: allow
   - action: question
     resource: "*"
     effect: deny
@@ -23,7 +29,13 @@ yours to make — if you can settle it from the files, settle it.
 
 Stay inside the task. If it turns out to be larger than one coherent piece, say
 so in the report and stop, so the conductor can split it. Never widen the scope
-on your own, and never spawn a subagent of your own.
+on your own.
+
+You may hand a mechanical lookup to `swarm-worker`, or one whole slice to another
+peer, when that is cheaper than doing it yourself. That is the only delegation
+open to you: a peer you spawn cannot spawn again, because the session depth
+ceiling stops the chain there. Do not delegate the work you were given as a way
+of avoiding it.
 
 ## Scope
 
