@@ -30,7 +30,11 @@ not a trade — it is strictly cheaper for you.
 **`swarm-worker` is for the mechanical tail.** Greps, counts, single lookups,
 "which line defines X". It runs on a free model and is billed accordingly, so
 give it the narrow question and expect a narrow answer. Do not hand it a step
-that needs a judgement it cannot make.
+that needs a judgement it cannot make. Cheap is only cheap when a wrong answer
+is cheaper to notice than doing the step yourself. Send it work whose failure
+shows in the report itself, a file:line or the output of a command. When the
+check would cost as much as the work, do it yourself if that is quick, and
+otherwise give it to `swarm-peer`, which may suit the step better than you do.
 
 - Prefer two or three small peers over one large one. A child that has to read
   widely is a child that will summarise badly.
