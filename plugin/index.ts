@@ -1181,10 +1181,43 @@ export default Plugin.define({
 
     try {
       await ctx.session.hook("experimental.model.resolve", async (event) => {
-        const tierName = agentTiers[String(event.agent)]
-        if (!tierName || !tiers[tierName]) return
         if (event.kind !== "primary") return
         if (!(await isChild(event.sessionID))) return
+        const tierName = agentTiers[String(event.agent)]
+        if (!tierName || !tiers[tierName]) {
+          // A child with no tier falls through to whatever spawned it, rather
+          // than keeping a model its own agent file happens to name. An agent
+          // with no model line already inherits, so this only changes the case
+          // where the file names one.
+          //
+          // The provider is not ours to change here, for the same reason the
+          // walk below stays on one provider: a model from another one comes
+          // back as `ModelUnavailableError` before the request is sent. So a
+          // spawner on a different provider is said out loud and left alone,
+          // instead of killing the child on its first request.
+          const info = await ctx.session.get({ sessionID: event.sessionID }).catch(() => undefined)
+          const spawner = info?.parentID
+            ? await ctx.session.get({ sessionID: info.parentID }).catch(() => undefined)
+            : undefined
+          const want = spawner?.model
+          if (want) {
+            const kept = modelKey(event.model)
+            if (modelKey(want) !== kept) {
+              if (want.providerID === event.model.providerID) {
+                event.model = {
+                  providerID: want.providerID as typeof event.model.providerID,
+                  id: want.id as typeof event.model.id,
+                }
+                trace.line(`tier-router: ${event.agent} has no tier; using the spawner's ${modelKey(want)}`)
+              } else {
+                trace.line(
+                  `tier-router: ${event.agent} has no tier; spawner ${modelKey(want)} is on another provider, keeping ${kept}`,
+                )
+              }
+            }
+          }
+          return
+        }
         const models = await pool()
         if (models.length === 0) return
         // Two rules decide the order. Free before paid, so a paid model is used

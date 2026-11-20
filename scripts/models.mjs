@@ -38,7 +38,44 @@ const binary =
   (existsSync("/Applications/OpenCode.app/Contents/Resources/opencode-cli")
     ? "/Applications/OpenCode.app/Contents/Resources/opencode-cli"
     : "opencode")
-const catalog = JSON.parse(execFileSync(binary, ["api", "get", "/api/model"], { encoding: "utf8" })).data
+// The catalog is the only input that needs a live server. A failure here is a
+// sentence, not a JSON.parse stack: the install still works with the models the
+// agent files already carry, so the message has to say that and say why.
+function fail(message) {
+  console.error(`models.mjs: ${message}`)
+  process.exit(1)
+}
+
+function readCatalog() {
+  let raw
+  try {
+    raw = execFileSync(binary, ["api", "get", "/api/model"], { encoding: "utf8" })
+  } catch (error) {
+    fail(
+      `\`${binary} api get /api/model\` failed: ${error?.message ?? error}. ` +
+        `Agent files keep their current model and nothing was written.`,
+    )
+  }
+  if (!raw.trim()) {
+    fail(
+      `\`${binary} api get /api/model\` returned nothing, so there is no catalog to resolve against. ` +
+        `Usually that means no OpenCode server is reachable, or the \`opencode\` on PATH is not the CLI that owns this config. ` +
+        `Agent files keep their current model and nothing was written. Point OPENCODE_BIN at the right CLI, or open a session, then run this again.`,
+    )
+  }
+  let body
+  try {
+    body = JSON.parse(raw)
+  } catch {
+    fail(`the model catalog was not JSON: ${JSON.stringify(raw.slice(0, 120))}`)
+  }
+  if (!Array.isArray(body?.data)) {
+    fail(`the model catalog had no \`data\` array: ${JSON.stringify(raw.slice(0, 120))}`)
+  }
+  return body.data
+}
+
+const catalog = readCatalog()
 
 const pool = catalog
   .filter((m) => m.enabled !== false)
@@ -72,6 +109,10 @@ function attempt(ref) {
 for (const [agentID, tierName] of Object.entries(tiers.agents ?? {})) {
   const tier = tiers.tiers?.[tierName]
   if (!tier) continue
+  // An anchored tier is resolved at runtime against the caller's own model, so
+  // it has no fixed model to probe for. Writing one would pin the agent to a
+  // provider chosen at install time, which is the opposite of the point.
+  if (tier.anchored) continue
   const path = join(root, "agents", `${agentID}.md`)
   let text
   try {

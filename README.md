@@ -191,17 +191,27 @@ reminder appears and when a spawn removes it, which is two cache misses per cycl
 instead of one per request.
 
 A rate-limited or refused subagent fails fast. A `retry` hook acts on every
-subagent tier (`swarm-worker`, `swarm-worker-code`, `swarm-lead`, `explore`,
-`advisor`), not the worker alone, and only for a session with a parent, so the
-root session keeps the model the user chose. A rate limit replaces the runner's
+subagent tier (`swarm-peer`, `swarm-worker`, `swarm-worker-code`, `swarm-lead`,
+`explore`, `advisor`), not the worker alone, and only for a session with a
+parent, so the root session keeps the model the user chose. A rate limit replaces the runner's
 fifteen-minute backoff with a retry after 1.5 s (4 s on later attempts), and the
 retry stops when no untried model is left. The stall the hook removes is what
 teaches a conductor to stop delegating; returning at once lets it escalate or do
 the work itself.
 
+A child whose agent has no tier is not left on whatever model its own file
+names: it falls through to the immediate spawner's model, so an unlisted agent
+behaves like the session that called it. The provider is the exception — the
+resolve hook cannot move a session across providers, so a spawner running on a
+different one is left alone and the skip is written to the trace, rather than
+killing the child on its first request.
+
 A refusal is a state rather than a window. A guardrail or data-policy exclusion,
-a model the provider does not serve, an empty balance, or a workspace limit is
-recorded for three days (72 h) because waiting does not clear it. A cause known
+a model the provider does not serve, or a settings change is recorded for three
+days (72 h) because waiting does not clear it. Money is the exception: an empty
+balance, a 402, or a spend limit is re-checked after four hours, because a
+top-up or a monthly reset turns it back on without anyone editing a setting, and
+a three-day park would outlast the payment that fixed it. A cause known
 only from a bare status or a bad credential gets ten minutes instead, because a
 gone model and a wrong base URL look the same there. A rate limit stays a window
 and never leaves the minutes, whatever its strike count: free tiers limit
@@ -276,6 +286,7 @@ agent's model line is left alone and every reason is printed, so an install
 cannot silently ship an agent that never replies. `--no-probe`, or
 `TIER_PROBE=0`, skips the check for an offline install.
 
+| `swarm-peer` | same price band as you | the default delegate: bulky reading and self-contained work where judgement matters; may be a better fit for the task than your own model |
 | `swarm-worker` | free flash | lookups, extraction, counting, cheap checks |
 | `swarm-worker-code` | cheap flash | tracing code, judging a diff, why a test fails; may split its own work to `swarm-worker` |
 | `swarm-lead` | cheap flash | splits work, holds at most three children, hands back with a skim |
@@ -292,6 +303,25 @@ Depth follows the profile, not a number. A one-line lookup goes to
 harder piece goes to `swarm-worker-code`, which may split once. A whole subtask
 goes to `swarm-lead`, which may split again. Choosing the profile by complexity
 is how the chain gets shorter or longer.
+
+`swarm-peer` is the one profile without a fixed model. Its agent file deliberately
+carries no `model:` line, so it starts on whatever model the session is already
+using — which also keeps it on the same provider, because the resolve hook cannot
+change that. The `peer` tier then re-picks inside a price band anchored on the
+root session's own model (`ratio` 0.6–2.5, and 0.8–3 for code), with `byKind`
+biasing toward quality for code and toward cost for lookups. That is what makes
+"at least as capable" honest without claiming the same model: the pick can be
+better suited to the task, but it is priced against the model you are talking to
+rather than against the cheapest model on the account. `scripts/models.mjs` skips
+any tier marked `anchored`, so a refresh cannot pin the peer to a provider chosen
+at install time.
+
+A peer is also given a sector: the files or directory its brief names. Reading is
+unrestricted, so it can follow a caller into a neighbouring file without asking,
+but a write outside the sector stops it. It reports the path, why the change is
+needed, and what it would do, and the conductor grants the next sector or does
+that part itself. That is what lets several peers work one tree without
+colliding.
 
 ## Tools
 

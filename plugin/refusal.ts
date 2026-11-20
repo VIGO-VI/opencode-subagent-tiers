@@ -15,11 +15,29 @@ import { modelKey, type ModelRef } from "./select.ts"
 /** A refusal is a setting or an account state, not a window. Three days. */
 export const REFUSAL_COOLDOWN_MS = 72 * 3_600_000
 /**
+ * Money and quota refusals are the exception to that rule, because a top-up or a
+ * monthly reset turns one back on without anybody editing a setting. Parking a
+ * funded provider for three days would outlast the payment that fixed it, so
+ * these are re-checked every few hours instead: a provider that is still broke
+ * costs one request per window and nothing in between, and one that was topped
+ * up comes back the same day.
+ */
+export const MONEY_REFUSAL_MS = 4 * 3_600_000
+/**
  * A refusal learned only from a bare status is ambiguous: a gone model and a
  * wrong base URL look the same. Ten minutes moves the walk on without parking
  * every model for three days after a configuration mistake.
  */
 export const SOFT_REFUSAL_MS = 10 * 60_000
+
+/** Reasons that name an account's balance or spend, so they expire on a timer. */
+const MONEY_REASONS: ReadonlySet<string> = new Set([
+  "insufficient balance",
+  "payment required",
+  "budget limit",
+  "insufficient quota",
+  "model budget limit",
+])
 
 export type RefusalKind = "rate-limit" | "refusal" | "none"
 export type RefusalScope = "provider" | "model"
@@ -204,7 +222,8 @@ export function isCooling(
 /** The fixed wait a refusal uses, or nothing for a rate limit's doubling wait. */
 export function cooldownFor(refusal: Refusal): number | undefined {
   if (refusal.kind !== "refusal") return undefined
-  return refusal.soft ? SOFT_REFUSAL_MS : REFUSAL_COOLDOWN_MS
+  if (refusal.soft) return SOFT_REFUSAL_MS
+  return MONEY_REASONS.has(refusal.reason) ? MONEY_REFUSAL_MS : REFUSAL_COOLDOWN_MS
 }
 
 export type RetryPlan =

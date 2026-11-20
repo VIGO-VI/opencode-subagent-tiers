@@ -102,6 +102,63 @@
       },
       "brief": "You are the working tier: a capable cheap model with no tools and no history. The caller is another cheap model, so be concrete and name the step it should take next."
     },
+    "peer": {
+      "label": "peer",
+      "anchored": true,
+      "pick": {
+        "ratio": [
+          0.6,
+          2.5
+        ],
+        "prefer": "quality",
+        "limit": 6,
+        "requireTools": true,
+        "minContext": 16000,
+        "deny": [
+          "*embed*",
+          "*audio*",
+          "*tts*"
+        ],
+        "byKind": {
+          "lookup": {
+            "prefer": "cost",
+            "ratio": [
+              0.4,
+              1.8
+            ]
+          },
+          "code": {
+            "ratio": [
+              0.8,
+              3
+            ],
+            "prefer": "quality"
+          },
+          "code-go": {
+            "ratio": [
+              0.8,
+              3
+            ],
+            "prefer": "quality"
+          },
+          "review": {
+            "ratio": [
+              0.8,
+              3
+            ],
+            "prefer": "quality"
+          },
+          "write": {
+            "ratio": [
+              0.6,
+              2.5
+            ],
+            "prefer": "quality"
+          }
+        }
+      },
+      "brief": "You are a peer of the caller, not a junior tier. You run in the same price band it does, possibly on a model better suited to this task, with a fresh context instead of its history. Do the work rather than describing how it could be done."
+    },
     "advisor": {
       "label": "advisor",
       "pick": {
@@ -189,6 +246,7 @@
     "swarm-worker": "worker",
     "swarm-worker-code": "lead",
     "swarm-lead": "lead",
+    "swarm-peer": "peer",
     "advisor": "advisor",
     "explore": "worker"
   },
