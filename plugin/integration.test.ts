@@ -40,6 +40,7 @@ function harness(options: Record<string, unknown>, catalog: Model[], hang = fals
   }
   const tools = new Map<string, { execute: (input: unknown, context: unknown) => Promise<unknown> }>()
   const notes: Array<{ sessionID: string; text: string }> = []
+  const switches: Array<{ sessionID: string; model: { providerID: string; id: string } }> = []
   const answers = new Map<string, string>()
   let failures = 0
 
@@ -68,6 +69,17 @@ function harness(options: Record<string, unknown>, catalog: Model[], hang = fals
       synthetic: async ({ sessionID, text }: { sessionID: string; text: string }) => {
         notes.push({ sessionID, text })
       },
+      switchModel: async ({
+        sessionID,
+        model,
+      }: {
+        sessionID: string
+        model: { providerID: string; id: string }
+      }) => {
+        switches.push({ sessionID, model })
+        const session = sessions[sessionID]
+        if (session) session.model = model
+      },
     },
     tool: {
       transform: async (callback: (editor: { add: (tool: unknown) => void }) => void) => {
@@ -94,7 +106,7 @@ function harness(options: Record<string, unknown>, catalog: Model[], hang = fals
     },
   }
 
-  return { ctx: ctx as never, storage, hooks, tools, notes, answers, asked, failures: () => failures }
+  return { ctx: ctx as never, storage, hooks, tools, notes, switches, answers, asked, failures: () => failures }
 }
 
 async function start(host: ReturnType<typeof harness>) {
@@ -607,4 +619,147 @@ test("the give-up notice runs once, names the 72 h window, and does not repeat",
   const three = failure()
   await retry(three)
   assert.equal(host.notes.length, 1, "the same outage is not announced twice")
+})
+
+test("a spent provider switches the session instead of waking the caller", async () => {
+  const host = harness(
+    {
+      ...baseTiers,
+      agents: { "swarm-worker": "worker" },
+      tiers: {
+        worker: {
+          pick: {
+            ratio: [0, 10],
+            prefer: "cost",
+            limit: 4,
+            rank: { "*free-a*": 90, "*free-b*": 80, "*free-c*": 70, "*base*": 10 },
+            deny: ["*base*"],
+          },
+        },
+      },
+    },
+    [
+      model("opencode-go", "free-a", 0),
+      model("opencode-go", "free-b", 0),
+      model("other", "free-c", 0),
+      model("root", "base", 2),
+    ],
+  )
+  const now = Date.now()
+  host.storage.set("cooldown", {
+    "opencode-go/free-a": { until: now + 3_600_000, strikes: 1 },
+    "opencode-go/free-b": { until: now + 3_600_000, strikes: 1 },
+  })
+  const { resolve, retry } = await start(host)
+
+  const event = {
+    sessionID: "child",
+    agent: "swarm-worker",
+    kind: "primary",
+    model: { providerID: "opencode-go", id: "free-a" },
+  }
+  await resolve(event)
+  assert.equal(host.notes.length, 0, "no notice while the walk is merely being set up")
+
+  const failed = {
+    sessionID: "child",
+    agent: "swarm-worker",
+    model: { providerID: "opencode-go", id: "free-a" },
+    error: { type: "provider.error", message: ZDR },
+    attempt: 1,
+    decision: { retry: false },
+  }
+  await retry(failed)
+  assert.deepEqual(host.switches, [{ sessionID: "child", model: { providerID: "other", id: "free-c" } }])
+  assert.deepEqual(failed.decision, { retry: true, delay: 1_500 })
+  assert.equal(host.notes.length, 0, "the caller is not woken when the child can continue")
+})
+
+test("when every provider is spent the caller is told, and nothing is switched", async () => {
+  const host = harness(
+    {
+      ...baseTiers,
+      agents: { "swarm-worker": "worker" },
+      tiers: {
+        worker: {
+          pick: {
+            ratio: [0, 10],
+            prefer: "cost",
+            limit: 4,
+            rank: { "*free-a*": 90, "*free-c*": 70, "*base*": 10 },
+            deny: ["*base*"],
+          },
+        },
+      },
+    },
+    [model("opencode-go", "free-a", 0), model("other", "free-c", 0), model("root", "base", 2)],
+  )
+  const now = Date.now()
+  host.storage.set("cooldown", {
+    "opencode-go/free-a": { until: now + 3_600_000, strikes: 1 },
+    "other/free-c": { until: now + 3_600_000, strikes: 1 },
+  })
+  const { resolve, retry } = await start(host)
+  await resolve({
+    sessionID: "child",
+    agent: "swarm-worker",
+    kind: "primary",
+    model: { providerID: "opencode-go", id: "free-a" },
+  })
+  const failed = {
+    sessionID: "child",
+    agent: "swarm-worker",
+    model: { providerID: "opencode-go", id: "free-a" },
+    error: { type: "provider.error", message: ZDR },
+    attempt: 1,
+    decision: { retry: true },
+  }
+  await retry(failed)
+  assert.deepEqual(host.switches, [])
+  assert.deepEqual(failed.decision, { retry: false })
+  assert.equal(host.notes.length, 1)
+  assert.match(host.notes[0]!.text, /no working model/)
+})
+
+test("crossProvider false keeps the old fail-and-tell behaviour", async () => {
+  const host = harness(
+    {
+      ...baseTiers,
+      crossProvider: false,
+      agents: { "swarm-worker": "worker" },
+      tiers: {
+        worker: {
+          pick: {
+            ratio: [0, 10],
+            prefer: "cost",
+            limit: 4,
+            rank: { "*free-a*": 90, "*free-c*": 70, "*base*": 10 },
+            deny: ["*base*"],
+          },
+        },
+      },
+    },
+    [model("opencode-go", "free-a", 0), model("other", "free-c", 0), model("root", "base", 2)],
+  )
+  const now = Date.now()
+  host.storage.set("cooldown", { "opencode-go/free-a": { until: now + 3_600_000, strikes: 1 } })
+  const { resolve, retry } = await start(host)
+  await resolve({
+    sessionID: "child",
+    agent: "swarm-worker",
+    kind: "primary",
+    model: { providerID: "opencode-go", id: "free-a" },
+  })
+  const failed = {
+    sessionID: "child",
+    agent: "swarm-worker",
+    model: { providerID: "opencode-go", id: "free-a" },
+    error: { type: "provider.error", message: ZDR },
+    attempt: 1,
+    decision: { retry: true },
+  }
+  await retry(failed)
+  assert.deepEqual(host.switches, [])
+  assert.deepEqual(failed.decision, { retry: false })
+  assert.equal(host.notes.length, 1)
 })

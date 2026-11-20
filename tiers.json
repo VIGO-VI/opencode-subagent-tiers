@@ -40,7 +40,7 @@
               0.4,
               1.4
             ],
-            "prefer": "quality",
+            "prefer": "value",
             "freeSlots": 0
           },
           "code-go": {
@@ -48,7 +48,7 @@
               0.4,
               1.4
             ],
-            "prefer": "quality",
+            "prefer": "value",
             "freeSlots": 0
           },
           "review": {
@@ -56,7 +56,7 @@
               0.4,
               1.5
             ],
-            "prefer": "quality",
+            "prefer": "value",
             "freeSlots": 0
           },
           "lookup": {
@@ -74,7 +74,7 @@
           0.5,
           1.4
         ],
-        "prefer": "quality",
+        "prefer": "value",
         "limit": 5,
         "byKind": {
           "lookup": {
@@ -110,7 +110,7 @@
           0.6,
           2.5
         ],
-        "prefer": "quality",
+        "prefer": "value",
         "limit": 6,
         "requireTools": true,
         "minContext": 16000,
@@ -132,28 +132,28 @@
               0.8,
               3
             ],
-            "prefer": "quality"
+            "prefer": "value"
           },
           "code-go": {
             "ratio": [
               0.8,
               3
             ],
-            "prefer": "quality"
+            "prefer": "value"
           },
           "review": {
             "ratio": [
               0.8,
               3
             ],
-            "prefer": "quality"
+            "prefer": "value"
           },
           "write": {
             "ratio": [
               0.6,
               2.5
             ],
-            "prefer": "quality"
+            "prefer": "value"
           }
         }
       },
@@ -166,7 +166,7 @@
           1.6,
           12
         ],
-        "prefer": "quality",
+        "prefer": "value",
         "limit": 8,
         "deny": [
           "*router*",
@@ -185,14 +185,14 @@
               1.6,
               12
             ],
-            "prefer": "quality"
+            "prefer": "value"
           },
           "code-go": {
             "ratio": [
               1.6,
               12
             ],
-            "prefer": "quality"
+            "prefer": "value"
           }
         },
         "requireTools": true,

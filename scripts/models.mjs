@@ -13,6 +13,8 @@ import {
   inferLocalPrice,
   inferLocalRank,
   isLocalProvider,
+  kindForAgent,
+  languageFor,
   modelKey,
   resolveCandidates,
 } from "../plugin/select.ts"
@@ -124,8 +126,7 @@ const pool = catalog
   })
 
 const table = { ...(rankings.rank ?? {}) }
-const changed = []
-// Two agents on one tier share a shortlist, and a probe is a request: ask once.
+const changed = []// Two agents on one tier share a shortlist, and a probe is a request: ask once.
 const dead = []
 const answered = new Map()
 function attempt(ref) {
@@ -148,7 +149,15 @@ for (const [agentID, tierName] of Object.entries(tiers.agents ?? {})) {
   } catch {
     continue
   }
-  const candidates = resolveCandidates(tier, pool, undefined, table, "general")
+  // A code agent is ranked on the coding table and carries the language
+  // dimension, exactly as the model hook does at runtime.
+  const kind = kindForAgent(agentID, tiers.agentKinds)
+  const kindTable = kind && rankings.rankByKind?.[kind] ? { ...table, ...rankings.rankByKind[kind] } : table
+  const fit = {
+    language: languageFor(kind, undefined, rankings.languages ?? {}),
+    languages: rankings.languages ?? {},
+  }
+  const candidates = resolveCandidates(tier, pool, undefined, kindTable, kind, fit)
   if (candidates.length === 0) continue
   const picked = probing
     ? firstAnswering(candidates, attempt, (line) => console.log(line))

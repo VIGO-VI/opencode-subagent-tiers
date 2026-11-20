@@ -4,10 +4,10 @@ Cost tiers for OpenCode subagents, plus a `consult` tool so a cheap conductor ca
 ask a stronger model one question, and a `handoff` tool so every report coming
 back up gets a quick skim by the tier above.
 
-No model is hardcoded in the plugin. A tier describes a price band relative to
-the session's own model, a preference for quality or cost, an optional rank
-table, and per-task overrides. The plugin resolves that against the live catalog
-every time it asks.
+No model is hardcoded in selector logic. A tier describes a price band relative
+to the session's own model, a weighting preset (quality per dollar first, then
+quality, then price), an optional rank table, and per-task overrides. The plugin
+resolves that against the live catalog every time it asks.
 
 ## Why
 
@@ -435,15 +435,39 @@ consult can carry that one line and nothing else.
 - `ratio` is the blended price (input + output, per million tokens) as a
   multiple of the session's base model. A Claude session therefore reaches for
   Claude-priced advisors, and a cheap-model session reaches for cheap ones.
-- `prefer: "quality"` sorts by the rank table, then newest release, then price.
-  `prefer: "cost"` tries free models first, then the configured provider order,
-  then the cheapest paid model. Extra free models stay at the end as a last
-  resort.
+- Every pick is a weighted score, not a single sort key. It mixes seven
+  dimensions: quality per dollar (the leading one), measured quality as the
+  near-equal backstop against a quality cliff, raw price, language fit, context
+  room, recency, and provider preference. The presets are `value` (default,
+  roughly the `(1-lambda)Q - lambda C` trade that RouteLLM and OpenRouter's
+  auto router use), `quality`, and `cost`; `weigh` overrides any dimension.
+  A preset's weights always sum to one.
+- A model with no entry in `rank`, and no derived rank for a local model, is
+  left out while any measured model remains: its price is known but its quality
+  is not, so its value cannot be computed, and scoring it as average would let a
+  cheap unknown outrank a measured model. If nothing at all is measured (a
+  missing `rankings.json`, or a catalog of brand-new models) the pool is kept
+  rather than resolving no tier.
+- `languages` maps a language to the same wildcard shape as `rank`, adding a
+  language-fit dimension. `code-go` asks for `go`, and a brief with a fenced
+  language or a `.go`/`.rs`/`.py`/`.ts` path asks for that one. With no data the
+  dimension is neutral, so it never distorts a choice it has no evidence for.
+- `prefer: "quality"` leans on the rank table; `prefer: "cost"` leans on price
+  and the free slots. Both still combine the other dimensions.
+- A subagent that was not spawned by `consult` gets its kind from `agentKinds`
+  or, failing that, from its name (`swarm-worker-code` is `code`, an `explore`
+  agent is `lookup`). The per-kind band and rank table therefore apply to the
+  model hook, not only to consults.
+- `crossProvider` (on by default) is the `/model` switch, not a recall. When a
+  child's provider has nothing left, the plugin calls `session.switchModel` and
+  retries in place: the child keeps its history and the caller is not woken.
+  Only a tier with nowhere left to go fails the request and tells the caller.
+  Set `false` to keep the old fail-and-tell behaviour.
 - `providers` confines a tier to the named providers, before the free slots and
   the limit are spent, and the paid floor obeys it too. The subagent resolver
   sets it to the provider the request is already on, because that is the only
-  provider the model hook can serve; a consult leaves it unset and may cross
-  providers.
+  provider the model hook can serve; `crossProvider` is what moves the session
+  when that provider is spent. A consult leaves it unset and may cross providers.
 - `rank` and `byKind.<kind>.rank` are wildcard tables over model ids. A newer
   release of the same family inherits its family's score and wins on recency,
   so a 4.2 beats a 4.1 without editing code.
@@ -491,17 +515,20 @@ machine:
 
 ```
 tier-router: worker/lookup for base opencode-go/deepseek-v4.1-flash ->
-  opencode-go/hy4-flash-free 0.00x rank 55 free |
-  opencode/deepseek-v4.1-flash-free 0.00x rank 72 free |
-  console-openrouter/inclusionai/ling-3.2-flash:free 0.00x rank 50 free |
-  opencode-go/muse-spark-1.3-contributor 0.40x rank 40
+  opencode-go/hy4-flash-free 0.00x rank 34.6 score 0.925 free |
+  console-openrouter/nvidia/nemotron-3.5-super-vl:free 0.00x rank 13.6 score 0.677 free |
+  opencode-go/muse-spark-1.3-contributor 0.40x rank 36.6 score 0.814 |
+  opencode-go/mimo-v2.6-flash 0.56x rank 26.7 score 0.748
 ```
 
 `providerOrder` still decides which provider `models.mjs` writes into each
 agent's `model` line, so it is how a fresh install chooses a worker's starting
 pool. A new provider needs no code: it becomes eligible when its models appear
 in the catalog. `allow`, `providers` and `deny` can scope a tier to particular
-providers or model families.
+providers or model families. The committed `model:` line is the terminal
+fallback when a tier has nothing left on its provider, so the test suite refuses
+any pin whose model has no entry in `rankings.json`; an unmeasured pin would be
+a guess the selector itself would never choose.
 
 ### When list price is not your price
 
@@ -660,8 +687,8 @@ $ npm run typecheck && echo TYPECHECK OK
 TYPECHECK OK
 
 $ npm test
-ℹ tests 146
-ℹ pass 146
+ℹ tests 160
+ℹ pass 160
 ℹ fail 0
 
 $ grep "tier-router:" /tmp/tier-test/run5.err
@@ -687,6 +714,8 @@ $ tail -3 /tmp/tier-test/run5.out
 
 The three runs show the three behaviours: free first for a lookup, the ranked
 strong model for code, and a cheap model for a lookup even at the advisor tier.
+A later build adds the composite `score` to each note and leaves unranked models
+out of the pool, so its trace has no `rank 50` placeholder lines.
 
 A worker handing a report up, with the skim catching a real defect:
 

@@ -511,5 +511,6 @@
       "*gemma?3n?e4b?it*": 3.2,
       "*gemma?3?4b?it*": 2.7
     }
-  }
+  },
+  "languages": {}
 }
