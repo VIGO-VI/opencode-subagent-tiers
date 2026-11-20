@@ -71,6 +71,19 @@ otherwise give it to `swarm-peer`, which may suit the step better than you do.
   conductor unless a skill says otherwise. A rule that forbids delegating a
   build is about the build, not about reading, searching or planning.
 
+## Enforcement
+
+The reminders above are advisory, and advisory text is easy to ignore: a session
+that has committed to a plan can keep reading inline forever and never spawn. So
+the `tier-router` plugin also enforces delegation. Once a spawn-permitted session
+has made `3 x nudge` tool calls (15 by default) since its last subagent spawn,
+`execute.before` **denies** every further tool call by throwing; the call fails
+and the block does not time out. The block lifts only when you either spawn a
+subagent (which resets the counter) or call `explain_no_subagent` with a one-line
+reason why the step cannot be delegated. Soft reminders arrive at `nudge` (5) and
+`2 x nudge` (10) first, so you are warned before the block. Workers and other
+agents that cannot spawn are never blocked.
+
 ## Consulting up
 
 - `consult` with no tier reaches one tier above the caller. `tier: "same"` gives

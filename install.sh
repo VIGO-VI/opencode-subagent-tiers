@@ -185,9 +185,22 @@ console.log(`wired ${projectDir} into ${configPath}`)
 // A number is taken literally, matching the plugin: 0 is off, not 5.
 const reminder =
   options.nudge === false ? 0 : typeof options.nudge === "number" ? Math.max(0, options.nudge) : 5
+const deny =
+  options.deny === false || options.deny === 0
+    ? 0
+    : typeof options.deny === "number"
+      ? Math.max(0, options.deny)
+      : reminder > 0
+        ? reminder * 3
+        : 0
 console.log(
   reminder > 0
     ? `delegation reminder: on, after ${reminder} tool calls without a spawn`
     : "delegation reminder: off",
+)
+console.log(
+  deny > 0
+    ? `delegation block: on, after ${deny} tool calls without a spawn (spawn a subagent or call explain_no_subagent to lift)`
+    : "delegation block: off",
 )
 NODE

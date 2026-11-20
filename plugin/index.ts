@@ -101,11 +101,23 @@ type Options = {
   /**
    * Append one reminder line to the system prompt when a session has run this
    * many tool calls since it last spawned a subagent. The line names the count,
-   * and at twice the interval it tells the session to stop reading inline.
-   * `true` or unset uses five calls, a number sets the interval, `false` and `0`
-   * disable it.
+   * and at twice the interval it stops suggesting and says to stop reading
+   * inline. `true` or unset uses five calls, a number sets the interval,
+   * `false` and `0` disable it. The hard block below is measured in these
+   * intervals too.
    */
   nudge?: boolean | number
+  /**
+   * Hard enforcement, the third tier the soft reminders cannot reach. When a
+   * spawn-permitted session has run this many tool calls since its last
+   * subagent spawn, `execute.before` DENIES every further tool call by throwing,
+   * until the session either spawns a subagent or calls `explain_no_subagent`
+   * with a one-line reason; either resets the counter. Defaults to `nudge * 3`
+   * (15 with the default nudge), so the escalation is remind at 5, stern at 10,
+   * block at 15. A number sets the threshold, `false` and `0` disable the hard
+   * block and leave only the soft system-prompt reminders.
+   */
+  deny?: boolean | number
   /**
    * Where a handoff report is delivered. `parent` posts it into the parent
    * session through the session API, so delivery cannot be lost or paraphrased
@@ -1063,26 +1075,107 @@ export default Plugin.define({
         : typeof options.nudge === "number"
           ? Math.max(0, options.nudge)
           : 5
+    // The third tier is a hard block, not another sentence the model can ignore.
+    // Two reminder levels (nudge, 2 x nudge) did not stop a session that had its
+    // own plan: it simply kept working inline. So at 3 x nudge (15 by default)
+    // execute.before denies further tool calls until the session spawns a
+    // subagent or explains why it cannot. An explicit number wins; false / 0 keeps
+    // only the soft reminders; turning the reminders off turns the block off too.
+    const denyEvery =
+      options.deny === false || options.deny === 0
+        ? 0
+        : typeof options.deny === "number"
+          ? Math.max(0, options.deny)
+          : nudgeEvery > 0
+            ? nudgeEvery * 3
+            : 0
+    trace.line(
+      denyEvery > 0
+        ? `tier-router: delegation block on at ${denyEvery} tool calls (remind ${nudgeEvery}, stern ${nudgeEvery * 2})`
+        : "tier-router: delegation block off (soft reminders only)",
+    )
 
-    if (nudgeEvery > 0) {
+    if (denyEvery > 0) {
+      // "Explain why" has to be a tool: this plugin version has no chat.message
+      // hook, so the only way a blocked model can lift the block without spawning
+      // is to call a tool whose name is exempted in execute.before below.
+      await ctx.tool.transform((editor) => {
+        editor.add({
+          name: "explain_no_subagent",
+          description:
+            "Lift a delegation block by explaining why a step cannot be delegated. " +
+            "Call this only when tool calls are being DENIED because you have worked " +
+            "inline too long without spawning a subagent, and you genuinely cannot " +
+            "delegate (one trivial step, or you are about to answer the user). " +
+            "State the reason in one line; the block lifts and the counter resets.",
+          options: { codemode: false },
+          input: {
+            type: "object",
+            properties: {
+              reason: { type: "string", description: "One line: why this step cannot be delegated to a subagent." },
+            },
+            required: ["reason"],
+            additionalProperties: false,
+          },
+          execute: async (input, context) => {
+            const reason = String((input as { reason?: string }).reason ?? "").trim()
+            if (!reason) throw new Error("explain_no_subagent needs a one-line reason")
+            const session = String(context.sessionID)
+            calls.set(session, 0)
+            reminding.delete(session)
+            trace.line(`tier-router: delegation block lifted by explanation for ${session}: ${reason.slice(0, 200)}`)
+            return {
+              content:
+                `Delegation block lifted. Reason recorded: ${reason}. ` +
+                "You may continue; spawn a subagent for any further substantial reading.",
+              metadata: { reason },
+            }
+          },
+        })
+      })
+    }
+
+    if (nudgeEvery > 0 || denyEvery > 0) {
       try {
         await ctx.tool.hook("execute.before", (event) => {
           const session = String(event.sessionID)
+          // In the real host agent is always set; the harness may omit it, in
+          // which case an empty string simply matches no spawnable agent.
+          const agent = String(event.agent ?? "")
           // Count the work, not the turns. A request counter cannot see past the
           // first call of a long turn, which is exactly the drift this is meant
           // to catch: twenty reads in one turn looked like one request.
+          // A spawn is delegation, so it clears the count and any block.
           if (event.tool === "subagent") {
             calls.set(session, 0)
             reminding.delete(session)
             return
           }
+          // The justification tool is the other escape hatch: never count it and
+          // never block it; its execute resets the counter.
+          if (event.tool === "explain_no_subagent") return
           if (calls.size > 1000) calls.clear()
-          calls.set(session, (calls.get(session) ?? 0) + 1)
+          const since = (calls.get(session) ?? 0) + 1
+          calls.set(session, since)
+          // Hard enforcement. A rejected execute.before becomes a Tool.Error for
+          // the model (only execute.before may reject a call), so throwing here
+          // denies this tool call. Only the two escape hatches above lift it.
+          if (denyEvery > 0 && since >= denyEvery && spawnable.has(agent)) {
+            throw new Error(
+              `Delegation block: ${since} tool calls since the last spawn and no subagent. ` +
+                `This "${event.tool}" call is DENIED. You must either (1) spawn a subagent ` +
+                "(swarm-worker / swarm-peer / swarm-worker-code) for the remaining work, or " +
+                "(2) call explain_no_subagent with a one-line reason why this step cannot be " +
+                "delegated. The block lifts as soon as you do either; it does not time out.",
+            )
+          }
         })
       } catch (error) {
-        trace.line(`tier-router: tool hook unavailable, no nudge: ${(error as Error)?.message ?? error}`)
+        trace.line(`tier-router: tool hook unavailable, no nudge or block: ${(error as Error)?.message ?? error}`)
       }
+    }
 
+    if (nudgeEvery > 0) {
       try {
         await ctx.session.hook("context", (event) => {
           try {
@@ -1094,20 +1187,28 @@ export default Plugin.define({
               reminding.delete(session)
               return
             }
-            // The first threshold suggests, the second one stops pretending the
-            // session is about to delegate on its own.
+            // Level 1 suggests, level 2 stops pretending the session will
+            // delegate on its own, level 3 warns that the next tool call is
+            // actually blocked until it delegates or explains.
+            const blocked = denyEvery > 0 && since >= denyEvery
             const escalated = since >= nudgeEvery * 2
             event.system.push({
               type: "text",
-              text: escalated
-                ? `Delegation reminder: ${since} tool calls since the last spawn. Stop reading inline. ` +
-                  "Spawn a swarm-worker now for the remaining reading, or a swarm-peer when the judgement matters."
-                : `Delegation reminder: ${since} tool calls since the last spawn. If this task needs more ` +
-                  "than one file read or shell call, spawn a swarm-worker for that reading now. Workers run on a free model.",
+              text: blocked
+                ? `Delegation block ACTIVE: ${since} tool calls since the last spawn. ` +
+                  "Further tool calls are DENIED until you spawn a subagent now, or call " +
+                  "explain_no_subagent with a one-line reason. Do one of them before the next tool call."
+                : escalated
+                  ? `Delegation reminder: ${since} tool calls since the last spawn. Stop reading inline. ` +
+                    "Spawn a swarm-worker now for the remaining reading, or a swarm-peer when the judgement matters."
+                  : `Delegation reminder: ${since} tool calls since the last spawn. If this task needs more ` +
+                    "than one file read or shell call, spawn a swarm-worker for that reading now. Workers run on a free model.",
             })
             if (!reminding.has(session)) {
               reminding.add(session)
-              trace.line(`tier-router: delegation reminder on for ${agent} after ${since} tool calls without a spawn`)
+              trace.line(
+                `tier-router: ${blocked ? "delegation block" : "delegation reminder"} on for ${agent} after ${since} tool calls without a spawn`,
+              )
             }
           } catch {
             // A reminder must never break a request.
