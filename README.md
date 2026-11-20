@@ -812,6 +812,30 @@ npm dependencies are cached by `setup-node`. The installer and package jobs skip
 - The tier ladder is per tier, not per agent instance. Two agents mapped to the
   same tier consult the same level above.
 
+## Troubleshooting
+
+`models.mjs` reads the model list from the running server. When that server
+cannot start, the agents keep the models their files already name, the script
+says which line the server printed, and nothing is written.
+
+The usual cause is the server's own storage. These builds keep sessions in a
+table called `session_v2`, and they refuse to migrate a database that has
+neither `session` nor `session_v2` in it:
+
+    [server] Database is not empty and has no session table
+
+That is a storage mismatch, not a broken checkout, and re-running the installer
+will not clear it. `opencode debug paths` prints the file as its `db` line. Move
+that file and its two sidecars aside, then let the server create a fresh one:
+
+    mv ~/.local/share/opencode/opencode.db     ~/opencode.db.bak
+    mv ~/.local/share/opencode/opencode.db-wal ~/opencode.db-wal.bak
+    mv ~/.local/share/opencode/opencode.db-shm ~/opencode.db-shm.bak
+
+Local session history, and any credential stored beside it, goes with that file.
+Back it up rather than deleting it. Nothing in this repository creates or reads
+the database.
+
 ## Licence
 
 MIT.

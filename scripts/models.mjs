@@ -74,7 +74,9 @@ function readCatalog() {
       `\`${binary} api get /api/model\` returned no model list` +
         (said ? `; the server said ${JSON.stringify(said)}` : "") +
         `. That is a server-side problem rather than a problem in this repository, ` +
-        `so check its log and its storage. Agent files keep their current model and nothing was written.`,
+        `so check its log and its storage; a \`Database is not empty and has no session table\` ` +
+        `error means the storage needs replacing, which Troubleshooting in README.md covers. ` +
+        `Agent files keep their current model and nothing was written.`,
     )
   }
   let body
