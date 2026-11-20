@@ -93,6 +93,10 @@ function install(fixture, env = {}) {
       ...process.env,
       PATH: `${fixture.bin}:${process.env.PATH ?? ""}`,
       FAKE_CATALOG: fixture.catalog,
+      // models.mjs checks the desktop app's bundled CLI before PATH, so on a
+      // machine with the app installed the fixture's fake loses and the test
+      // resolves models from a live server. Name the fake directly.
+      OPENCODE_BIN: join(fixture.bin, "opencode"),
       OPENCODE_CONFIG_DIR: fixture.config,
       // Probe would issue a real request; the resolver is what this test covers.
       TIER_PROBE: "0",
