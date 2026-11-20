@@ -99,11 +99,11 @@ type Options = {
    */
   log?: string | false
   /**
-   * Append one reminder line to the system prompt when a session has made this
-   * many model requests without spawning a subagent. The line stays while the
-   * session keeps working alone and disappears as soon as a subagent runs.
-   * `true` or unset uses five requests, a number sets the interval, `false`
-   * disables it.
+   * Append one reminder line to the system prompt when a session has run this
+   * many tool calls since it last spawned a subagent. The line names the count,
+   * and at twice the interval it tells the session to stop reading inline.
+   * `true` or unset uses five calls, a number sets the interval, `false` and `0`
+   * disable it.
    */
   nudge?: boolean | number
   /**
@@ -1018,10 +1018,8 @@ export default Plugin.define({
         if (agentTiers[id] !== "worker") spawnable.add(id)
       }
     }
-    // Requests a session has made, and the request count at its last subagent
-    // call. The difference is how long it has been working alone.
-    const requests = new Map<string, number>()
-    const spawnedAt = new Map<string, number>()
+    /** Tool executions per session since the last subagent spawn. */
+    const calls = new Map<string, number>()
     const reminding = new Set<string>()
     // A value saved from the desktop panel wins over the config file, so the
     // setting survives a restart without editing JSON.
@@ -1068,10 +1066,17 @@ export default Plugin.define({
     if (nudgeEvery > 0) {
       try {
         await ctx.tool.hook("execute.before", (event) => {
-          if (event.tool !== "subagent") return
           const session = String(event.sessionID)
-          spawnedAt.set(session, requests.get(session) ?? 0)
-          reminding.delete(session)
+          // Count the work, not the turns. A request counter cannot see past the
+          // first call of a long turn, which is exactly the drift this is meant
+          // to catch: twenty reads in one turn looked like one request.
+          if (event.tool === "subagent") {
+            calls.set(session, 0)
+            reminding.delete(session)
+            return
+          }
+          if (calls.size > 1000) calls.clear()
+          calls.set(session, (calls.get(session) ?? 0) + 1)
         })
       } catch (error) {
         trace.line(`tier-router: tool hook unavailable, no nudge: ${(error as Error)?.message ?? error}`)
@@ -1083,24 +1088,25 @@ export default Plugin.define({
             const session = String(event.sessionID)
             const agent = String(event.agent)
             if (!spawnable.has(agent)) return
-            const seen = (requests.get(session) ?? 0) + 1
-            requests.set(session, seen)
-            // Start on the second request, the way the vendor's own nudge waits
-            // for the executor to orient before reminding it.
-            if (seen < 2) return
-            if (seen - (spawnedAt.get(session) ?? 0) < nudgeEvery) {
+            const since = calls.get(session) ?? 0
+            if (since < nudgeEvery) {
               reminding.delete(session)
               return
             }
+            // The first threshold suggests, the second one stops pretending the
+            // session is about to delegate on its own.
+            const escalated = since >= nudgeEvery * 2
             event.system.push({
               type: "text",
-              text:
-                "Delegation reminder: if this task needs more than one file read or shell call, " +
-                "spawn a swarm-worker for that reading now, before you start it. Workers run on a free model.",
+              text: escalated
+                ? `Delegation reminder: ${since} tool calls since the last spawn. Stop reading inline. ` +
+                  "Spawn a swarm-worker now for the remaining reading, or a swarm-peer when the judgement matters."
+                : `Delegation reminder: ${since} tool calls since the last spawn. If this task needs more ` +
+                  "than one file read or shell call, spawn a swarm-worker for that reading now. Workers run on a free model.",
             })
             if (!reminding.has(session)) {
               reminding.add(session)
-              trace.line(`tier-router: delegation reminder on for ${agent} after ${seen} requests without a spawn`)
+              trace.line(`tier-router: delegation reminder on for ${agent} after ${since} tool calls without a spawn`)
             }
           } catch {
             // A reminder must never break a request.

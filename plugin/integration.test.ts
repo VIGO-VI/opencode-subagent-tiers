@@ -34,6 +34,7 @@ function harness(options: Record<string, unknown>, catalog: Model[], hang = fals
   const storage = new Map<string, unknown>()
   const asked: string[] = []
   const hooks = new Map<string, Handler[]>()
+  const toolHooks = new Map<string, Handler[]>()
   const sessions: Record<string, Record<string, unknown>> = {
     root: { id: "root", model: { providerID: "root", id: "base" } },
     child: { id: "child", parentID: "root", model: { providerID: "root", id: "base" } },
@@ -55,7 +56,13 @@ function harness(options: Record<string, unknown>, catalog: Model[], hang = fals
     model: { list: async () => ({ data: catalog }) },
     agent: {
       get: async ({ agentID }: { agentID: string }) => ({ data: { id: agentID } }),
-      list: async () => ({ data: [] }),
+      // The list the nudge reads permissions from. A mapped agent below the
+      // top tier can spawn; a worker is not pestered to delegate.
+      list: async () => ({
+        data: Object.entries((options as { agents?: Record<string, string> }).agents ?? {})
+          .filter(([, tier]) => tier !== "worker")
+          .map(([id]) => ({ id, permissions: [{ action: "subagent", resource: "*", effect: "allow" }] })),
+      }),
     },
     session: {
       get: async ({ sessionID }: { sessionID: string }) => sessions[sessionID],
@@ -86,7 +93,12 @@ function harness(options: Record<string, unknown>, catalog: Model[], hang = fals
         callback({ add: (tool) => tools.set((tool as { name: string }).name, tool as never) })
         return { dispose: async () => {} }
       },
-      hook: async () => ({ dispose: async () => {} }),
+      hook: async (name: string, callback: Handler) => {
+        const list = toolHooks.get(name) ?? []
+        list.push(callback)
+        toolHooks.set(name, list)
+        return { dispose: async () => {} }
+      },
     },
     rpc: { register: async () => {} },
     experimental: {
@@ -106,7 +118,26 @@ function harness(options: Record<string, unknown>, catalog: Model[], hang = fals
     },
   }
 
-  return { ctx: ctx as never, storage, hooks, tools, notes, switches, answers, asked, failures: () => failures }
+  return {
+    ctx: ctx as never,
+    storage,
+    hooks,
+    toolHooks,
+    tools,
+    notes,
+    switches,
+    answers,
+    asked,
+    failures: () => failures,
+    /** Fire the plugin's execute.before callbacks, the way a tool call would. */
+    async toolBefore(event: Record<string, unknown>) {
+      for (const callback of toolHooks.get("execute.before") ?? []) await callback(event)
+    },
+    /** Fire the plugin's context callbacks, the way a request would. */
+    async fireContext(event: Record<string, unknown>) {
+      for (const callback of hooks.get("context") ?? []) await callback(event)
+    },
+  }
 }
 
 async function start(host: ReturnType<typeof harness>) {
@@ -762,4 +793,89 @@ test("crossProvider false keeps the old fail-and-tell behaviour", async () => {
   assert.deepEqual(host.switches, [])
   assert.deepEqual(failed.decision, { retry: false })
   assert.equal(host.notes.length, 1)
+})
+
+test("the delegation reminder counts tool calls and names the number", async () => {
+  const host = harness({ ...baseTiers, nudge: 2, agents: { "swarm-worker-code": "lead" } }, [
+    model("root", "base", 1),
+  ])
+  await start(host)
+  const event = {
+    sessionID: "child",
+    agent: "swarm-worker-code",
+    system: [] as Array<{ type: string; text: string }>,
+  }
+  await host.toolBefore({ tool: "read", sessionID: "child" })
+  await host.fireContext(event)
+  assert.equal(event.system.length, 0, "one call is below the threshold")
+  await host.toolBefore({ tool: "shell", sessionID: "child" })
+  await host.fireContext(event)
+  assert.equal(event.system.length, 1)
+  assert.match(event.system[0]!.text, /^Delegation reminder: 2 tool calls since the last spawn/)
+  assert.match(event.system[0]!.text, /spawn a swarm-worker/)
+})
+
+test("the reminder escalates while the session keeps working inline", async () => {
+  const host = harness({ ...baseTiers, nudge: 2, agents: { "swarm-worker-code": "lead" } }, [
+    model("root", "base", 1),
+  ])
+  await start(host)
+  for (let call = 0; call < 4; call++) await host.toolBefore({ tool: "read", sessionID: "child" })
+  const event = {
+    sessionID: "child",
+    agent: "swarm-worker-code",
+    system: [] as Array<{ type: string; text: string }>,
+  }
+  await host.fireContext(event)
+  assert.equal(event.system.length, 1)
+  assert.match(event.system[0]!.text, /4 tool calls/)
+  assert.match(event.system[0]!.text, /Stop reading inline/)
+})
+
+test("a spawn resets the count", async () => {
+  const host = harness({ ...baseTiers, nudge: 2, agents: { "swarm-worker-code": "lead" } }, [
+    model("root", "base", 1),
+  ])
+  await start(host)
+  for (let call = 0; call < 3; call++) await host.toolBefore({ tool: "read", sessionID: "child" })
+  await host.toolBefore({ tool: "subagent", sessionID: "child" })
+  const event = {
+    sessionID: "child",
+    agent: "swarm-worker-code",
+    system: [] as Array<{ type: string; text: string }>,
+  }
+  await host.fireContext(event)
+  assert.equal(event.system.length, 0, "the spawn cleared the counter")
+  await host.toolBefore({ tool: "read", sessionID: "child" })
+  await host.fireContext(event)
+  assert.equal(event.system.length, 0, "one call after a spawn is below the threshold")
+  await host.toolBefore({ tool: "read", sessionID: "child" })
+  await host.fireContext(event)
+  assert.equal(event.system.length, 1)
+  assert.match(event.system[0]!.text, /2 tool calls/)
+})
+
+test("nudge false and nudge zero both register no reminder", async () => {
+  for (const nudge of [false, 0]) {
+    const host = harness({ ...baseTiers, nudge, agents: { "swarm-worker-code": "lead" } }, [
+      model("root", "base", 1),
+    ])
+    await start(host)
+    assert.equal(host.hooks.get("context"), undefined)
+  }
+})
+
+test("an agent that cannot spawn is not reminded", async () => {
+  const host = harness({ ...baseTiers, nudge: 1, agents: { "swarm-worker": "worker" } }, [
+    model("root", "base", 1),
+  ])
+  await start(host)
+  await host.toolBefore({ tool: "read", sessionID: "child" })
+  const event = {
+    sessionID: "child",
+    agent: "swarm-worker",
+    system: [] as Array<{ type: string; text: string }>,
+  }
+  await host.fireContext(event)
+  assert.equal(event.system.length, 0)
 })
