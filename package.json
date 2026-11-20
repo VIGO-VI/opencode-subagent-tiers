@@ -11,11 +11,14 @@
   "files": [
     "plugin",
     "agents",
+    "dist/gui-experimental.cjs",
     "README.md"
   ],
   "scripts": {
-    "test": "node --test plugin/*.test.ts",
-    "typecheck": "tsc --noEmit",
+    "validate": "node scripts/validate.mjs",
+    "test": "node --test plugin/*.test.ts scripts/*.test.mjs",
+    "test:coverage": "node --test --experimental-test-coverage --test-coverage-lines=80 --test-coverage-branches=70 --test-coverage-functions=75 plugin/*.test.ts scripts/*.test.mjs",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.gui.json",
     "build:gui": "vite build",
     "format": "prettier --write plugin/index.ts gui.tsx"
   },

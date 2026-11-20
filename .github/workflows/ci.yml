@@ -4,14 +4,22 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
+
+# A new push to a pull request makes the previous run irrelevant. Main is never
+# cancelled: every commit that lands keeps a complete result.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
 
 jobs:
-  validate:
-    name: validate
+  data:
+    name: data and shell
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -19,24 +27,90 @@ jobs:
           node-version: "24"
           cache: npm
       - run: npm ci --no-audit --no-fund
-      # Everything a user's install reads, checked before it can reach them.
       - name: JSON, tier graph and agent frontmatter
-        run: node scripts/validate.mjs
-      - name: Shell syntax
-        run: sh -n install.sh
-      - name: Script syntax
-        run: node --check scripts/models.mjs && node --check scripts/probe.mjs
-      - name: Types
-        run: npx tsc --noEmit
+        run: npm run validate
+      - name: POSIX shell syntax
+        run: sh -n install.sh && sh -n setup.sh
+      - name: ShellCheck
+        run: |
+          if ! command -v shellcheck >/dev/null 2>&1; then
+            sudo apt-get update -qq
+            sudo apt-get install -y shellcheck
+          fi
+          shellcheck install.sh setup.sh
+      - name: Node syntax for every script
+        run: |
+          for file in scripts/*.mjs; do
+            node --check "$file"
+          done
+      - name: Lint this workflow
+        run: docker run --rm -v "$PWD:/repo" -w /repo rhysd/actionlint:1.7.7
+
+  types:
+    name: types and bundle
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - name: Typecheck the plugin and the GUI
+        run: npm run typecheck
+      - name: The committed GUI bundle matches its source
+        run: |
+          npm run build:gui
+          if ! git diff --quiet -- dist/; then
+            git diff --stat -- dist/
+            echo "::error::dist/gui-experimental.cjs does not match gui.tsx. Run npm run build:gui and commit the result."
+            exit 1
+          fi
 
   test:
-    name: test
+    name: test (Node ${{ matrix.node }})
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      # One failing Node version should not hide the other's result.
+      fail-fast: false
+      matrix:
+        node: ["22", "24"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - name: Tests, with coverage floors on the files they touch
+        run: npm run test:coverage
+
+  install:
+    name: installer
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: "24"
-          cache: npm
-      - run: npm ci --no-audit --no-fund
-      - run: npm test
+      # No npm ci: a user's checkout has no node_modules yet, and install.sh has
+      # to work there. The test supplies a fake `opencode` catalog instead.
+      - name: install.sh against a throwaway config and fake catalog
+        run: node --test scripts/install.test.mjs
+
+  package:
+    name: package contents
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - name: Pack the publishable tarball
+        run: npm pack --dry-run --json > "$RUNNER_TEMP/pack.json"
+      - name: Every export resolves inside the tarball
+        run: node scripts/check-pack.mjs "$RUNNER_TEMP/pack.json"
