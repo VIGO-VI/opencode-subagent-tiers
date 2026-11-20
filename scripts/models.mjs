@@ -41,18 +41,63 @@ const binary =
 // The catalog is the only input that needs a live server. A failure here is a
 // sentence, not a JSON.parse stack: the install still works with the models the
 // agent files already carry, so the message has to say that and say why.
-function fail(message) {
+function fail(message, code = 1) {
   console.error(`models.mjs: ${message}`)
-  process.exit(1)
+  process.exit(code)
+}
+
+/** The one failure the installer can act on, so it carries its own exit status. */
+const STORAGE_MESSAGE =
+  `the server cannot start because its database has no session table, so there is no catalog ` +
+  `to resolve against. Agent files keep their current model and nothing was written. ` +
+  `Troubleshooting in README.md explains the repair, and the installer offers it from a terminal.`
+
+/**
+ * Whether OpenCode's own database is the reason no catalog came back. Checked
+ * against the file rather than the log, because the failure only arrives as a
+ * line on stderr or in the server's log and the wording is not ours to trust.
+ * Returns false when it cannot tell, so the caller falls back to the generic
+ * message instead of claiming a cause it did not confirm.
+ */
+function storageIsUnmigratable() {
+  try {
+    const paths = execFileSync(binary, ["debug", "paths"], { encoding: "utf8" })
+    const line = paths.split("\n").find((entry) => entry.trim().startsWith("db"))
+    const db = line?.trim().split(/\s+/)[1]
+    if (!db || !existsSync(db)) return false
+    const tables = execFileSync("sqlite3", [db, ".tables"], { encoding: "utf8" })
+      .split(/\s+/)
+      .filter(Boolean)
+    // These builds need one of these two to migrate; without either, a
+    // non-empty database is refused outright.
+    return tables.length > 0 && !tables.includes("session") && !tables.includes("session_v2")
+  } catch {
+    return false
+  }
 }
 
 function readCatalog() {
   let raw
   try {
-    raw = execFileSync(binary, ["api", "get", "/api/model"], { encoding: "utf8" })
+    raw = execFileSync(binary, ["api", "get", "/api/model"], {
+      encoding: "utf8",
+      // Without this the CLI's own failure stack is printed straight at the user,
+      // which buries the one sentence that matters under nine frames.
+      stdio: ["ignore", "pipe", "pipe"],
+    })
   } catch (error) {
+    // The CLI exits non-zero when the server cannot start, so the storage case
+    // lands here far more often than in an empty payload.
+    if (storageIsUnmigratable()) fail(STORAGE_MESSAGE, 2)
+    // `error.message` is the command plus the child's whole stderr, stack
+    // included. One line is enough to say what happened.
+    const detail = String(error?.stderr ?? error?.message ?? error)
+      .split("\n")
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .pop()
     fail(
-      `\`${binary} api get /api/model\` failed: ${error?.message ?? error}. ` +
+      `\`${binary} api get /api/model\` failed: ${detail ?? "no output"}. ` +
         `Agent files keep their current model and nothing was written.`,
     )
   }
@@ -70,13 +115,12 @@ function readCatalog() {
       .split("\n")
       .map((line) => line.trim())
       .find(Boolean)
+    if (storageIsUnmigratable()) fail(STORAGE_MESSAGE, 2)
     fail(
       `\`${binary} api get /api/model\` returned no model list` +
         (said ? `; the server said ${JSON.stringify(said)}` : "") +
         `. That is a server-side problem rather than a problem in this repository, ` +
-        `so check its log and its storage; a \`Database is not empty and has no session table\` ` +
-        `error means the storage needs replacing, which Troubleshooting in README.md covers. ` +
-        `Agent files keep their current model and nothing was written.`,
+        `so check its log and its storage. Agent files keep their current model and nothing was written.`,
     )
   }
   let body
