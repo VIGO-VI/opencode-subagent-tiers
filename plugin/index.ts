@@ -1013,10 +1013,11 @@ export default Plugin.define({
           rules.some((rule) => rule.action === "*" && rule.resource === "*" && rule.effect === "allow")
         if (can) spawnable.add(agent.id)
       }
-    } catch {
-      for (const id of Object.keys(agentTiers)) {
-        if (agentTiers[id] !== "worker") spawnable.add(id)
-      }
+    } catch (error) {
+      // Without the permission list there is no way to tell a spawner from a
+      // worker, and a reminder to a worker is noise at best. Stay quiet and say
+      // why, rather than guessing from the tier name.
+      trace.line(`tier-router: no agent permissions, reminder off: ${(error as Error)?.message ?? error}`)
     }
     /** Tool executions per session since the last subagent spawn. */
     const calls = new Map<string, number>()
