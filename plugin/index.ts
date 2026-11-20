@@ -1030,8 +1030,15 @@ export default Plugin.define({
     // A session that delegates once and then drifts back to doing the reading
     // itself needs the reminder again, so the interval is measured from the
     // last spawn instead of from the session start, and there is no budget.
+    //
+    // A number is taken literally, so 0 turns the reminder off rather than
+    // silently becoming 5, which is what a person writing 0 means by it.
     const nudgeEvery =
-      options.nudge === false ? 0 : typeof options.nudge === "number" && options.nudge > 0 ? options.nudge : 5
+      options.nudge === false
+        ? 0
+        : typeof options.nudge === "number"
+          ? Math.max(0, options.nudge)
+          : 5
 
     if (nudgeEvery > 0) {
       try {
