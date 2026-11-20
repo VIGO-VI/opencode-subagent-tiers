@@ -22,6 +22,10 @@
     "build:gui": "vite build",
     "format": "prettier --write plugin/index.ts gui.tsx"
   },
+  "overrides": {
+    "glob": "^14.0.6",
+    "minimatch": "^11.0.9"
+  },
   "devDependencies": {
     "@opencode/client": "2.3.0",
     "@opencode/plugin": "2.3.0",
