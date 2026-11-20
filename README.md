@@ -88,7 +88,7 @@ every other key, prints the delegation reminder it wired, and is safe to re-run
 after editing `tiers.json`.
 
 The reminder arrives with the install. `nudge: 5` in `tiers.json` means a
-session that has made five requests since its last subagent call gets the
+session that has run five tool calls since it last spawned a subagent gets the
 sentence in its system prompt. Set another number there for a different
 interval, or `false` to turn it off. Without the tier options a plugin entry
 installed by hand still gets the default of five.
