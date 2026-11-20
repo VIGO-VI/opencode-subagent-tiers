@@ -1,5 +1,4 @@
 ---
-model: console-openrouter/tencent/hy4
 description: Cheap conductor. Start here for a multi-step task: it splits the work, sends every self-contained step to a worker, and consults the advisor only when stuck.
 mode: all
 steps: 40

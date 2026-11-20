@@ -1,8 +1,9 @@
 #!/usr/bin/env node
-// Write each agent's model from its tier, resolved against the live catalog.
-// The tier policy lives in tiers.json, so no agent file pins a model by hand and
-// re-running install refreshes every pick. Usage:
-//   node scripts/models.mjs [--dry]
+// Write an installed agent's model from its tier, resolved against the live
+// catalog. The checkout itself names no model: a committed pick would be a
+// literal that goes stale, and it would point at a provider that may not exist
+// later. Install runs this against the copied agents. Usage:
+//   node scripts/models.mjs [--dir <agents dir>] [--dry] [--no-probe]
 import { execFileSync } from "node:child_process"
 import { existsSync } from "node:fs"
 import { readFileSync, writeFileSync, readdirSync } from "node:fs"
@@ -28,6 +29,13 @@ function currentModel(text) {
 const here = dirname(fileURLToPath(import.meta.url))
 const root = join(here, "..")
 const dry = process.argv.includes("--dry")
+// The installed agents, not the checkout. A user running this by hand gets the
+// same target the installer uses, so a command never writes a model into git.
+const dirFlag = process.argv.indexOf("--dir")
+const configDir =
+  process.env.OPENCODE_CONFIG_DIR ??
+  join(process.env.XDG_CONFIG_HOME ?? join(process.env.HOME ?? "", ".config"), "opencode")
+const agentDir = (dirFlag === -1 ? undefined : process.argv[dirFlag + 1]) ?? join(configDir, "agents")
 // Probing costs one short request per candidate. `--no-probe` keeps an offline
 // install working, at the price of trusting the resolver alone.
 const probing = !process.argv.includes("--no-probe") && process.env.TIER_PROBE !== "0"
@@ -188,7 +196,7 @@ for (const [agentID, tierName] of Object.entries(tiers.agents ?? {})) {
   // it has no fixed model to probe for. Writing one would pin the agent to a
   // provider chosen at install time, which is the opposite of the point.
   if (tier.anchored) continue
-  const path = join(root, "agents", `${agentID}.md`)
+  const path = join(agentDir, `${agentID}.md`)
   let text
   try {
     text = readFileSync(path, "utf8")

@@ -164,9 +164,9 @@ example, local workers and a cloud advisor:
 
 Node 22.6 or newer is needed for the install step, because the model resolver
 reads `scripts/models.mjs` and that imports the TypeScript selection logic
-directly. If Node is missing, install prints a warning for every agent left
-without a model, since a model-less agent inherits the conductor's model, which
-is the opposite of what the plugin is for.
+directly. If Node is missing, the installed agents simply have no model line and
+inherit the conductor's, so the install still works; it just loses the starting
+provider each agent would otherwise get.
 
 A second config directory gets the same treatment, which is how the container
 install is made rather than hand-edited:
@@ -269,11 +269,14 @@ permission graph allows it. It just has no reason to.
 
 | Agent | Model | Use |
 | --- | --- | --- |
-Agent files no longer name a model. `install.sh` runs `scripts/models.mjs`, which
-asks the running server for the catalog, applies the same tier policy the tools
-use, and writes the winning model into each agent's frontmatter. Re-running
-install refreshes every pick, and `node scripts/models.mjs --dry` shows what
-would change without touching a file.
+Agent files name no model at all. `install.sh` copies them, then runs
+`scripts/models.mjs` against the copies, which asks the running server for the
+catalog, applies the same tier policy the tools use, and writes a winning model
+into each installed copy's frontmatter. The checkout stays model-free, so it
+remains installable when a provider or a model has disappeared; without a
+reachable catalog the copies also stay model-free and inherit the conductor's
+model. Re-running install refreshes every pin, and
+`node scripts/models.mjs --dry --dir <agents dir>` shows what would change.
 
 A pick is probed before it is written. `scripts/models.mjs` asks the running
 server for one short answer from the chosen model and falls through to the next
@@ -304,10 +307,9 @@ harder piece goes to `swarm-worker-code`, which may split once. A whole subtask
 goes to `swarm-lead`, which may split again. Choosing the profile by complexity
 is how the chain gets shorter or longer.
 
-`swarm-peer` is the one profile without a fixed model. Its agent file deliberately
-carries no `model:` line, so it starts on whatever model the session is already
-using — which also keeps it on the same provider, because the resolve hook cannot
-change that. The `peer` tier then re-picks inside a price band anchored on the
+Every agent file carries no `model:` line, so a child starts on whatever model
+the session is already using, which also keeps it on the same provider, because
+the resolve hook cannot change that. That is what `swarm-peer` relies on. The `peer` tier then re-picks inside a price band anchored on the
 root session's own model (`ratio` 0.6–2.5, and 0.8–3 for code), with `byKind`
 biasing toward quality for code and toward cost for lookups. That is what makes
 "at least as capable" honest without claiming the same model: the pick can be
@@ -522,13 +524,13 @@ tier-router: worker/lookup for base opencode-go/deepseek-v4.1-flash ->
 ```
 
 `providerOrder` still decides which provider `models.mjs` writes into each
-agent's `model` line, so it is how a fresh install chooses a worker's starting
-pool. A new provider needs no code: it becomes eligible when its models appear
+installed agent's `model` line, so it is how a fresh install chooses a worker's
+starting pool. A new provider needs no code: it becomes eligible when its models appear
 in the catalog. `allow`, `providers` and `deny` can scope a tier to particular
-providers or model families. The committed `model:` line is the terminal
-fallback when a tier has nothing left on its provider, so the test suite refuses
-any pin whose model has no entry in `rankings.json`; an unmeasured pin would be
-a guess the selector itself would never choose.
+providers or model families. The installed `model:` line is the terminal
+fallback when a tier has nothing left on its provider. The test suite refuses any
+model line in the checkout, because a committed pin is a literal that outlives
+its provider; install is what writes one, from the catalog that exists today.
 
 ### When list price is not your price
 
@@ -844,8 +846,10 @@ npm dependencies are cached by `setup-node`. The installer and package jobs skip
 ## Troubleshooting
 
 `models.mjs` reads the model list from the running server. When that server
-cannot start, the agents keep the models their files already name, the script
-says which line the server printed, and nothing is written.
+cannot start, the installed copies keep whatever model line they already have,
+which on a first install is none, and the script says which line the server
+printed. Nothing is written, and a model-free agent still works by inheriting the
+conductor's model.
 
 The usual cause is the server's own storage. These builds keep sessions in a
 table called `session_v2`, and they refuse to migrate a database that has

@@ -1,5 +1,4 @@
 ---
-model: console-openrouter/z-ai/glm-5.3
 description: Paid worker that reads code well. Escalate to it only when a swarm-worker report was not enough, or when a wrong answer would cost more than this worker does.
 mode: subagent
 steps: 16

@@ -1,5 +1,4 @@
 ---
-model: opencode-go/hy4-flash-free
 description: Free narrow worker. Use it for every self-contained lookup, extraction, count or check; it costs nothing and keeps the conductor's context small.
 mode: subagent
 steps: 14
