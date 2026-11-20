@@ -210,7 +210,7 @@ const reminder =
   options.nudge === false ? 0 : typeof options.nudge === "number" ? Math.max(0, options.nudge) : 5
 console.log(
   reminder > 0
-    ? `delegation reminder: on, after ${reminder} requests without a spawn`
+    ? `delegation reminder: on, after ${reminder} tool calls without a spawn`
     : "delegation reminder: off",
 )
 NODE

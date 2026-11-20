@@ -879,3 +879,57 @@ test("an agent that cannot spawn is not reminded", async () => {
   await host.fireContext(event)
   assert.equal(event.system.length, 0)
 })
+
+test("the switch reaches a candidate past the tier's limit", async () => {
+  // The limit is applied before the provider filter, so a short list can be all
+  // models on the provider that just failed. The switch must still see the one
+  // on the next provider instead of waking the caller.
+  const host = harness(
+    {
+      ...baseTiers,
+      agents: { "swarm-worker": "worker" },
+      tiers: {
+        worker: {
+          pick: {
+            ratio: [0, 10],
+            prefer: "cost",
+            limit: 2,
+            rank: { "*free-a1*": 90, "*free-a2*": 80, "*free-a3*": 70, "*free-b*": 60, "*base*": 10 },
+            deny: ["*base*"],
+          },
+        },
+      },
+    },
+    [
+      model("opencode-go", "free-a1", 0),
+      model("opencode-go", "free-a2", 0),
+      model("opencode-go", "free-a3", 0),
+      model("other", "free-b", 0),
+      model("root", "base", 2),
+    ],
+  )
+  const now = Date.now()
+  host.storage.set("cooldown", {
+    "opencode-go/free-a1": { until: now + 3_600_000, strikes: 1 },
+    "opencode-go/free-a2": { until: now + 3_600_000, strikes: 1 },
+    "opencode-go/free-a3": { until: now + 3_600_000, strikes: 1 },
+  })
+  const { resolve, retry } = await start(host)
+  await resolve({
+    sessionID: "child",
+    agent: "swarm-worker",
+    kind: "primary",
+    model: { providerID: "opencode-go", id: "free-a1" },
+  })
+  const failed = {
+    sessionID: "child",
+    agent: "swarm-worker",
+    model: { providerID: "opencode-go", id: "free-a1" },
+    error: { type: "provider.error", message: ZDR },
+    attempt: 1,
+    decision: { retry: true },
+  }
+  await retry(failed)
+  assert.deepEqual(host.switches, [{ sessionID: "child", model: { providerID: "other", id: "free-b" } }])
+  assert.deepEqual(failed.decision, { retry: true, delay: 1_500 })
+})

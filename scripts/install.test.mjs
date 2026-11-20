@@ -146,7 +146,7 @@ test("a fresh install copies every agent and writes a wired config", () => {
     assert.equal(config.plugins[0].package, fixture.repo)
     assert.deepEqual(config.plugins[0].options, tiers)
     assert.match(result.stdout, /permission graph depth: 3/)
-    assert.match(result.stdout, /delegation reminder: on, after 5 requests/)
+    assert.match(result.stdout, /delegation reminder: on, after 5 tool calls/)
   } finally {
     cleanup(fixture)
   }
@@ -167,7 +167,7 @@ test("a nudge of zero turns the reminder off rather than becoming five", () => {
     const result = install(fixture)
     assert.equal(result.status, 0, result.stderr)
     assert.match(result.stdout, /delegation reminder: off/)
-    assert.doesNotMatch(result.stdout, /after 5 requests/)
+    assert.doesNotMatch(result.stdout, /after 5 tool calls/)
   } finally {
     cleanup(fixture)
   }
@@ -179,7 +179,7 @@ test("a nudge of three is taken literally", () => {
     setNudge(fixture, 3)
     const result = install(fixture)
     assert.equal(result.status, 0, result.stderr)
-    assert.match(result.stdout, /delegation reminder: on, after 3 requests/)
+    assert.match(result.stdout, /delegation reminder: on, after 3 tool calls/)
   } finally {
     cleanup(fixture)
   }

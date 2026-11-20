@@ -1509,7 +1509,15 @@ export default Plugin.define({
               languages: rankings.languages,
             }
             const now = Date.now()
-            const next = resolveCandidates(elsewhere, models, anchors.get(sessionID), table, kind, fit).find(
+            // Ask for the whole list, not the tier's `limit`. The limit is
+            // applied before the provider filter, so a short list can be all
+            // models on the provider that just failed, and `.find` would then
+            // miss the candidate on the next provider and wake the caller for
+            // nothing.
+            const unbounded = elsewhere.pick
+              ? { ...elsewhere, pick: { ...elsewhere.pick, limit: Number.POSITIVE_INFINITY } }
+              : elsewhere
+            const next = resolveCandidates(unbounded, models, anchors.get(sessionID), table, kind, fit).find(
               (candidate) =>
                 candidate.ref.providerID !== model.providerID &&
                 !done.has(modelKey(candidate.ref)) &&
