@@ -836,6 +836,11 @@ Local session history, and any credential stored beside it, goes with that file.
 Back it up rather than deleting it. Nothing in this repository creates or reads
 the database.
 
+`install.sh` offers that move when it runs from a terminal and the model refresh
+hits this case. The prompt defaults to No, refuses while OpenCode is holding the
+file, and keeps the old database beside the new one, so the manual steps above
+are only needed away from a terminal or from CI.
+
 ## Licence
 
 MIT.

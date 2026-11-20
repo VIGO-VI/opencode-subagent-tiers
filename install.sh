@@ -10,10 +10,58 @@ here=$(cd "$(dirname "$0")" && pwd)
 config_dir="${OPENCODE_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/opencode}"
 config="$config_dir/opencode.json"
 
+# The one failure the installer can act on: a database OpenCode refuses to
+# migrate stops the server before it can answer the model list. The move is
+# offered, never assumed, never runs without a terminal, and deletes nothing.
+offer_repair() {
+  bin=${OPENCODE_BIN:-opencode}
+  db=$("$bin" debug paths 2>/dev/null | awk '$1 == "db" { print $2 }')
+  if [ -z "$db" ] || [ ! -f "$db" ]; then
+    echo "could not locate the database, so nothing was changed; see Troubleshooting in README.md"
+    return 0
+  fi
+  if fuser -s "$db" 2>/dev/null || [ -n "$(lsof -t "$db" 2>/dev/null)" ]; then
+    echo "OpenCode is using $db right now. Quit it, then run this script again."
+    return 0
+  fi
+  printf '\n%s\n%s\n\n' \
+    "OpenCode's database has no session table, so it will not start." \
+    "Moving it aside lets OpenCode build a fresh one. The old file is kept, so the history is not lost."
+  printf 'Move %s aside and continue? [y/N] ' "$db"
+  read -r answer || answer=""
+  case "$answer" in
+    [yY] | [yY][eE][sS])
+      stamp=$(date +%Y%m%d%H%M%S)
+      for suffix in '' -wal -shm; do
+        if [ -f "$db$suffix" ]; then
+          mv "$db$suffix" "$db$suffix.invalid-$stamp"
+        fi
+      done
+      echo "moved it aside; the backup is $db.invalid-$stamp"
+      node "$here/scripts/models.mjs" || echo "the catalog is still unreadable; see Troubleshooting in README.md"
+      ;;
+    *)
+      echo "left it alone; see Troubleshooting in README.md"
+      ;;
+  esac
+}
+
 # Resolve each agent's model from the live catalog before copying, so no agent
 # file carries a hand-pinned model that can go stale.
 if command -v node >/dev/null 2>&1; then
-  node "$here/scripts/models.mjs" || echo "model refresh skipped, agent files keep their last model"
+  refresh=0
+  node "$here/scripts/models.mjs" || refresh=$?
+  if [ "$refresh" -eq 2 ]; then
+    # 2 is the storage failure specifically, so the installer reacts to the one
+    # case it can help with instead of pattern-matching a log line.
+    if [ -t 0 ]; then
+      offer_repair
+    else
+      echo "no terminal to ask on, so the database was left alone; see Troubleshooting in README.md"
+    fi
+  elif [ "$refresh" -ne 0 ]; then
+    echo "model refresh skipped, agent files keep their last model"
+  fi
 else
   echo "node not found: agent models were not refreshed"
 fi
