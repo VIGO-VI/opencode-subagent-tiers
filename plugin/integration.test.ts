@@ -58,11 +58,14 @@ function harness(options: Record<string, unknown>, catalog: Model[], hang = fals
       get: async ({ agentID }: { agentID: string }) => ({ data: { id: agentID } }),
       // The list the nudge reads permissions from. A mapped agent below the
       // top tier can spawn; a worker is not pestered to delegate.
-      list: async () => ({
-        data: Object.entries((options as { agents?: Record<string, string> }).agents ?? {})
-          .filter(([, tier]) => tier !== "worker")
-          .map(([id]) => ({ id, permissions: [{ action: "subagent", resource: "*", effect: "allow" }] })),
-      }),
+      list: async () => {
+        if ((options as { agentListFails?: boolean }).agentListFails) throw new Error("agent list unavailable")
+        return {
+          data: Object.entries((options as { agents?: Record<string, string> }).agents ?? {})
+            .filter(([, tier]) => tier !== "worker")
+            .map(([id]) => ({ id, permissions: [{ action: "subagent", resource: "*", effect: "allow" }] })),
+        }
+      },
     },
     session: {
       get: async ({ sessionID }: { sessionID: string }) => sessions[sessionID],
@@ -830,6 +833,25 @@ test("the reminder escalates while the session keeps working inline", async () =
   assert.equal(event.system.length, 1)
   assert.match(event.system[0]!.text, /4 tool calls/)
   assert.match(event.system[0]!.text, /Stop reading inline/)
+})
+
+test("no reminder when the agent list cannot be read", async () => {
+  // The tier name is not evidence that an agent may spawn: an advisor or a
+  // user-defined subagent can deny the subagent action. Without the permission
+  // list the plugin cannot tell, so it stays quiet instead of guessing.
+  const host = harness(
+    { ...baseTiers, nudge: 1, agents: { "swarm-worker-code": "lead" }, agentListFails: true },
+    [model("root", "base", 1)],
+  )
+  await start(host)
+  for (let call = 0; call < 4; call++) await host.toolBefore({ tool: "read", sessionID: "child" })
+  const event = {
+    sessionID: "child",
+    agent: "swarm-worker-code",
+    system: [] as Array<{ type: string; text: string }>,
+  }
+  await host.fireContext(event)
+  assert.equal(event.system.length, 0)
 })
 
 test("a spawn resets the count", async () => {
