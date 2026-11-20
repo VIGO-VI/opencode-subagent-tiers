@@ -656,12 +656,12 @@ not record that split, so a single exact figure would be invented.
 ## Verification
 
 ```
-$ npx tsc --noEmit && echo TYPECHECK OK
+$ npm run typecheck && echo TYPECHECK OK
 TYPECHECK OK
 
 $ npm test
-ℹ tests 73
-ℹ pass 73
+ℹ tests 146
+ℹ pass 146
 ℹ fail 0
 
 $ grep "tier-router:" /tmp/tier-test/run5.err
@@ -763,6 +763,27 @@ the running app still reports `features: {"server": true}` for this plugin after
 `opencode reload`. GUI parts are resolved when the desktop app boots, so quit and
 reopen the app once after building. Settings > Extensions > Plugins then lists
 the switch for it.
+
+## Continuous integration
+
+`.github/workflows/ci.yml` runs five jobs in parallel on every pull request and
+on `main`:
+
+- **data and shell** parses the JSON, walks the tier graph, reads every agent's
+  frontmatter, checks both shell scripts with `sh -n` and ShellCheck, syntax
+  checks each Node script, and lints the workflow itself with actionlint.
+- **types and bundle** typechecks the plugin and the GUI, rebuilds
+  `dist/gui-experimental.cjs`, and fails if the committed bundle differs.
+- **test** runs the suite on Node 22 and 24 with line, branch and function
+  coverage floors of 80%, 70% and 75%.
+- **installer** runs `install.sh` with no `node_modules` against a throwaway
+  config directory and a fake `opencode` catalog, then asserts the merged
+  config, the copied agents, the model refresh, idempotency and malformed input.
+- **package contents** packs the publishable tarball and checks that every
+  `exports` target and agent file is inside it.
+
+npm dependencies are cached by `setup-node`. The installer and package jobs skip
+`npm ci` entirely because neither needs it.
 
 ## Limits
 

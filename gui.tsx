@@ -46,7 +46,7 @@ function SettingsView() {
 
   const load = async () => {
     try {
-      const value = await ctx.client.rpc(Settings).get({})
+      const value = (await ctx.client.rpc(Settings).get({})) as { mode: string; prefer: string }
       setMode(value.mode)
       setPrefer(value.prefer)
     } catch (cause) {
@@ -56,7 +56,7 @@ function SettingsView() {
 
   const update = async (patch: { mode?: string; prefer?: string }) => {
     try {
-      const value = await ctx.client.rpc(Settings).set(patch)
+      const value = (await ctx.client.rpc(Settings).set(patch)) as { mode: string; prefer: string }
       setMode(value.mode)
       setPrefer(value.prefer)
       setError(undefined)
@@ -211,7 +211,7 @@ export default Plugin.define({
         id: PANEL_ID,
         region: "side",
         width: "narrow",
-        mobile: { title: "Subagents", order: 60, kind: "menu", icon: "git-branch" },
+        mobile: { title: "Subagents", order: 60, kind: "menu", icon: "branch" },
         list: (input) => (input.open.includes(PANEL_ID) ? [panelTab()] : []),
         render: (props) => <List session={props.session} ctx={ctx} />,
       })
@@ -242,7 +242,7 @@ export default Plugin.define({
           menu: "session.panel" as const,
           id: PANEL_ID,
           title: "Subagents",
-          icon: "git-branch" as const,
+          icon: "branch" as const,
           order: 60,
           ...(state !== undefined && state !== "closed" ? { opened: true } : {}),
           run: () => {

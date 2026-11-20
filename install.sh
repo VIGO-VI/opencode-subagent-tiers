@@ -57,7 +57,15 @@ const [configPath, projectDir] = process.argv.slice(2)
 let config = { $schema: "https://opencode.ai/config.json" }
 if (fs.existsSync(configPath)) {
   const text = fs.readFileSync(configPath, "utf8").trim()
-  if (text) config = JSON.parse(text)
+  if (text) {
+    config = JSON.parse(text)
+    // A JSON array or scalar parses, but every field assigned to it below would
+    // be dropped by JSON.stringify. Refuse it instead of writing an empty file
+    // and claiming success.
+    if (config === null || typeof config !== "object" || Array.isArray(config)) {
+      throw new Error(`${configPath} must contain a JSON object at the top level`)
+    }
+  }
 }
 
 // --- derive the delegation depth from the permission graph -----------------
@@ -108,7 +116,13 @@ function longest(from, seen = new Set()) {
 const graphDepth = 1 + Math.max(0, ...graph.keys().map((id) => longest(id)))
 // The runtime cap is a ceiling, not a target: permissions still decide which
 // agent may spawn which, so the effective chain can be shorter than this.
-const depth = Number(process.env.SUBAGENT_DEPTH ?? 3)
+// An unset value means 3; a malformed one must not become null in the config.
+const rawDepth = process.env.SUBAGENT_DEPTH
+const requested = rawDepth === undefined ? 3 : Number(rawDepth)
+const depth = Number.isInteger(requested) && requested >= 1 ? requested : 3
+if (rawDepth !== undefined && depth !== requested) {
+  console.warn(`SUBAGENT_DEPTH=${JSON.stringify(rawDepth)} is not a positive integer; using ${depth}`)
+}
 console.log(
   `permission graph depth: ${graphDepth}; runtime ceiling subagent_depth: ${depth}` +
     (graphDepth > depth ? " (graph is deeper than the ceiling, raise SUBAGENT_DEPTH)" : ""),
@@ -116,7 +130,11 @@ console.log(
 
 const options = JSON.parse(fs.readFileSync(path.join(projectDir, "tiers.json"), "utf8"))
 
-config.experimental = { ...(config.experimental ?? {}), subagent_depth: depth }
+const experimental = config.experimental
+if (experimental !== undefined && (experimental === null || typeof experimental !== "object" || Array.isArray(experimental))) {
+  throw new Error(`${configPath}: experimental must be a JSON object`)
+}
+config.experimental = { ...(experimental ?? {}), subagent_depth: depth }
 
 // Run new sessions as the conductor and hand every session the delegation rules,
 // so a fresh session uses the workers without being told each time. The README
