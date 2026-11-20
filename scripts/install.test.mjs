@@ -155,6 +155,7 @@ test("a fresh install copies every agent and writes a wired config", () => {
     assert.deepEqual(config.plugins[0].options, tiers)
     assert.match(result.stdout, /permission graph depth: 3/)
     assert.match(result.stdout, /delegation reminder: on, after 5 tool calls/)
+    assert.match(result.stdout, /delegation block: on, after 15 tool calls/)
   } finally {
     cleanup(fixture)
   }
@@ -188,6 +189,37 @@ test("a nudge of three is taken literally", () => {
     const result = install(fixture)
     assert.equal(result.status, 0, result.stderr)
     assert.match(result.stdout, /delegation reminder: on, after 3 tool calls/)
+  } finally {
+    cleanup(fixture)
+  }
+})
+
+test("an explicit deny sets the printed block threshold", () => {
+  const fixture = setup()
+  try {
+    const path = join(fixture.repo, "tiers.json")
+    const tiers = JSON.parse(readFileSync(path, "utf8"))
+    tiers.deny = 9
+    writeFileSync(path, `${JSON.stringify(tiers, null, 2)}\n`)
+    const result = install(fixture)
+    assert.equal(result.status, 0, result.stderr)
+    assert.match(result.stdout, /delegation block: on, after 9 tool calls/)
+  } finally {
+    cleanup(fixture)
+  }
+})
+
+test("deny false turns the block off", () => {
+  const fixture = setup()
+  try {
+    const path = join(fixture.repo, "tiers.json")
+    const tiers = JSON.parse(readFileSync(path, "utf8"))
+    tiers.deny = false
+    writeFileSync(path, `${JSON.stringify(tiers, null, 2)}\n`)
+    const result = install(fixture)
+    assert.equal(result.status, 0, result.stderr)
+    assert.match(result.stdout, /delegation block: off/)
+    assert.doesNotMatch(result.stdout, /delegation block: on/)
   } finally {
     cleanup(fixture)
   }

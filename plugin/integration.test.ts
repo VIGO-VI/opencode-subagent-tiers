@@ -902,6 +902,107 @@ test("an agent that cannot spawn is not reminded", async () => {
   assert.equal(event.system.length, 0)
 })
 
+test("hard delegation block: three nudge intervals deny a tool call", async () => {
+  const host = harness({ ...baseTiers, nudge: 2, agents: { "swarm-lead": "lead" } }, [
+    model("root", "base", 1),
+  ])
+  await start(host)
+  // Five inline tool calls by a spawn-permitted conductor are allowed. The
+  // sixth (3 x nudge = 6) is denied: execute.before throws, which the plugin
+  // API turns into a Tool.Error for the model.
+  for (let call = 0; call < 5; call++) {
+    await host.toolBefore({ tool: "read", sessionID: "child", agent: "swarm-lead" })
+  }
+  await assert.rejects(
+    () => host.toolBefore({ tool: "shell", sessionID: "child", agent: "swarm-lead" }),
+    /Delegation block: 6 tool calls since the last spawn.*DENIED.*explain_no_subagent/,
+  )
+})
+
+test("spawning a subagent lifts the block", async () => {
+  const host = harness({ ...baseTiers, nudge: 2, agents: { "swarm-lead": "lead" } }, [
+    model("root", "base", 1),
+  ])
+  await start(host)
+  for (let call = 0; call < 5; call++) {
+    await host.toolBefore({ tool: "read", sessionID: "child", agent: "swarm-lead" })
+  }
+  await assert.rejects(
+    () => host.toolBefore({ tool: "read", sessionID: "child", agent: "swarm-lead" }),
+    /Delegation block/,
+  )
+  // A spawn is delegation: it clears the counter, so the block is gone.
+  await host.toolBefore({ tool: "subagent", sessionID: "child", agent: "swarm-lead" })
+  await host.toolBefore({ tool: "read", sessionID: "child", agent: "swarm-lead" })
+})
+
+test("explain_no_subagent lifts the block and records the reason", async () => {
+  const host = harness({ ...baseTiers, nudge: 2, agents: { "swarm-lead": "lead" } }, [
+    model("root", "base", 1),
+  ])
+  await start(host)
+  for (let call = 0; call < 5; call++) {
+    await host.toolBefore({ tool: "read", sessionID: "child", agent: "swarm-lead" })
+  }
+  await assert.rejects(
+    () => host.toolBefore({ tool: "read", sessionID: "child", agent: "swarm-lead" }),
+    /Delegation block/,
+  )
+  const tool = host.tools.get("explain_no_subagent")
+  assert.ok(tool, "the justification tool must be registered when the block is on")
+  await assert.rejects(() => tool.execute({ reason: "  " }, { sessionID: "child" }), /needs a one-line reason/)
+  const result = (await tool.execute({ reason: "single trivial grep" }, { sessionID: "child" })) as {
+    content: string
+  }
+  assert.match(result.content, /Delegation block lifted/)
+  // The block is gone: a normal tool call no longer throws.
+  await host.toolBefore({ tool: "read", sessionID: "child", agent: "swarm-lead" })
+})
+
+test("deny false and deny zero keep only the soft reminders", async () => {
+  for (const deny of [false, 0]) {
+    const host = harness({ ...baseTiers, nudge: 2, deny, agents: { "swarm-lead": "lead" } }, [
+      model("root", "base", 1),
+    ])
+    await start(host)
+    for (let call = 0; call < 20; call++) {
+      await host.toolBefore({ tool: "read", sessionID: "child", agent: "swarm-lead" })
+    }
+    assert.equal(host.tools.get("explain_no_subagent"), undefined, "no justification tool when the block is off")
+  }
+})
+
+test("a non-spawnable agent is never blocked", async () => {
+  const host = harness({ ...baseTiers, nudge: 1, agents: { "swarm-worker": "worker" } }, [
+    model("root", "base", 1),
+  ])
+  await start(host)
+  // Workers cannot spawn and must not be pestered or blocked, even far past the
+  // deny threshold (nudge 1 -> deny 3).
+  for (let call = 0; call < 20; call++) {
+    await host.toolBefore({ tool: "read", sessionID: "child", agent: "swarm-worker" })
+  }
+})
+
+test("the context hook warns that the block is active at the deny threshold", async () => {
+  const host = harness({ ...baseTiers, nudge: 2, agents: { "swarm-lead": "lead" } }, [
+    model("root", "base", 1),
+  ])
+  await start(host)
+  for (let call = 0; call < 6; call++) {
+    await host.toolBefore({ tool: "read", sessionID: "child", agent: "swarm-lead" }).catch(() => {})
+  }
+  const event = {
+    sessionID: "child",
+    agent: "swarm-lead",
+    system: [] as Array<{ type: string; text: string }>,
+  }
+  await host.fireContext(event)
+  assert.equal(event.system.length, 1)
+  assert.match(event.system[0]!.text, /Delegation block ACTIVE/)
+  assert.match(event.system[0]!.text, /explain_no_subagent/)
+})
+
 test("the switch reaches a candidate past the tier's limit", async () => {
   // The limit is applied before the provider filter, so a short list can be all
   // models on the provider that just failed. The switch must still see the one

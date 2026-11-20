@@ -84,14 +84,14 @@ git clone git@github.com:VIGO-VI/opencode-subagent-tiers.git ~/Projects/opencode
 `install.sh`. `install.sh` copies the agents into `~/.config/opencode/agents/`,
 sets `experimental.subagent_depth` to 3, and adds the plugin entry with the tier
 options from `tiers.json` to `~/.config/opencode/opencode.json`. It preserves
-every other key, prints the delegation reminder it wired, and is safe to re-run
+every other key, prints the delegation reminder and the delegation block it wired, and is safe to re-run
 after editing `tiers.json`.
 
 The reminder arrives with the install. `nudge: 5` in `tiers.json` means a
 session that has run five tool calls since it last spawned a subagent gets the
 sentence in its system prompt. Set another number there for a different
 interval, or `false` to turn it off. Without the tier options a plugin entry
-installed by hand still gets the default of five.
+installed by hand still gets the default of five. The install also wires the hard block: `deny: 15` (or `3 x nudge`) tool calls, after which tool calls are refused until the session delegates or explains, and prints both thresholds so the wired behaviour is visible.
 
 `TIERS_DIR` overrides the checkout location and `TIERS_REMOTE` the clone URL.
 On Windows without WSL, run the two scripts from Git Bash.
@@ -185,6 +185,8 @@ one-shot budget, and at twice the interval the sentence stops suggesting and say
 to stop reading inline. `nudge: 5` sets the interval, `nudge: false` and
 `nudge: 0` both turn it off.
 
+Two levels are still only text, and a model with its own plan can ignore them; that is exactly how a session can read twenty files inline and never spawn. So the plugin has a third, enforcing level: at `3 x nudge` tool calls (15 by default, set with `deny`), the `execute.before` hook **denies** every further tool call by throwing, so the call fails with a `Tool.Error`. The block lifts only when the session spawns a subagent (which resets the counter) or calls the `explain_no_subagent` tool with a one-line reason. `deny: false` and `deny: 0` leave only the soft reminders. Agents that cannot spawn, such as workers, are never blocked.
+
 The named count costs some cache: the tail changes as the number grows, where the
 old fixed sentence changed only when the reminder appeared. That is the trade for
 a reminder that can say how far the session has drifted, and the prefix still
@@ -252,18 +254,23 @@ and do not use per-spawn overrides.
 
 What makes an agent actually delegate, in order of strength:
 
-1. `default_agent: "swarm-lead"`, set by `install.sh`, so a new session starts as
+1. The plugin's hard delegation block (above): at `3 x nudge` inline tool calls
+   the `execute.before` hook denies tool calls until the session spawns a subagent
+   or explains why it cannot. This is the only lever that does not depend on the
+   model choosing to comply.
+2. `default_agent: "swarm-lead"`, set by `install.sh`, so a new session starts as
    the conductor instead of a general agent.
-2. `instructions`, also set by `install.sh`, which injects this repository's
+3. `instructions`, also set by `install.sh`, which injects this repository's
    `AGENTS.md` into every session, so the delegation rules are present even when
    the user picks another agent.
-3. The `description` of each agent, which is what the model reads when it picks a
+4. The `description` of each agent, which is what the model reads when it picks a
    subagent. They now say when to use each one rather than only what it is.
    Descriptions stay model-free: `models.mjs` rewrites only the `model` line, so
    a model named in a description goes stale at the next install.
 
-Without any of those, an agent can still spawn the workers, because the
-permission graph allows it. It just has no reason to.
+Without the last three, an agent can still spawn the workers, because the
+permission graph allows it. It just has no reason to; the block is what supplies
+one.
 
 ## Agents
 
