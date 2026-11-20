@@ -56,21 +56,49 @@ function readCatalog() {
         `Agent files keep their current model and nothing was written.`,
     )
   }
-  if (!raw.trim()) {
+  // `opencode api` interleaves server diagnostics with the payload on stdout, and
+  // a server that failed to initialize answers with one of those lines instead of
+  // JSON. Drop the diagnostics before judging what came back, so a log line is
+  // never mistaken for a broken payload.
+  const payload = raw
+    .split("\n")
+    .filter((line) => !line.trim().startsWith("[server]"))
+    .join("\n")
+    .trim()
+  if (!payload) {
+    const said = raw
+      .split("\n")
+      .map((line) => line.trim())
+      .find(Boolean)
     fail(
-      `\`${binary} api get /api/model\` returned nothing, so there is no catalog to resolve against. ` +
-        `Usually that means no OpenCode server is reachable, or the \`opencode\` on PATH is not the CLI that owns this config. ` +
-        `Agent files keep their current model and nothing was written. Point OPENCODE_BIN at the right CLI, or open a session, then run this again.`,
+      `\`${binary} api get /api/model\` returned no model list` +
+        (said ? `; the server said ${JSON.stringify(said)}` : "") +
+        `. That is a server-side problem rather than a problem in this repository, ` +
+        `so check its log and its storage. Agent files keep their current model and nothing was written.`,
     )
   }
   let body
   try {
-    body = JSON.parse(raw)
+    body = JSON.parse(payload)
   } catch {
-    fail(`the model catalog was not JSON: ${JSON.stringify(raw.slice(0, 120))}`)
+    // The payload may still be wrapped in something a log line was printed
+    // beside, so look for the outermost object before giving up.
+    const open = payload.indexOf("{")
+    const close = payload.lastIndexOf("}")
+    body = undefined
+    if (open !== -1 && close > open) {
+      try {
+        body = JSON.parse(payload.slice(open, close + 1))
+      } catch {
+        body = undefined
+      }
+    }
+    if (!Array.isArray(body?.data)) {
+      fail(`the model catalog was not JSON: ${JSON.stringify(payload.slice(0, 200))}`)
+    }
   }
   if (!Array.isArray(body?.data)) {
-    fail(`the model catalog had no \`data\` array: ${JSON.stringify(raw.slice(0, 120))}`)
+    fail(`the model catalog had no \`data\` array: ${JSON.stringify(payload.slice(0, 200))}`)
   }
   return body.data
 }
