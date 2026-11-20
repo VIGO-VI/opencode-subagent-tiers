@@ -24,6 +24,76 @@ export type Candidate = {
   bias?: number
 }
 
+export type Weights = {
+  /** Quality per dollar: measured rank divided by the price ratio. */
+  value: number
+  /** Measured rank for the task kind, regardless of price. */
+  quality: number
+  /** Raw cheapness inside the band. */
+  price: number
+  /** Fit for the task's programming language, from the `languages` table. */
+  language: number
+  /** Room for the job, with diminishing returns past what it needs. */
+  context: number
+  /** How recently the model shipped. */
+  recency: number
+  /** Provider order and the hybrid placement bias. */
+  preference: number
+}
+
+export const WEIGHT_PRESETS: Record<"quality" | "cost" | "value", Weights> = {
+  // Quality per dollar leads, quality sits close behind so a cheap model cannot
+  // win by falling off a quality cliff, and raw price only breaks near-ties.
+  value: { value: 0.4, quality: 0.35, price: 0.1, language: 0.05, context: 0.05, recency: 0.03, preference: 0.02 },
+  // Rank first. Value and price still separate models that are close in rank.
+  quality: { value: 0.1, quality: 0.55, price: 0.05, language: 0.1, context: 0.08, recency: 0.06, preference: 0.06 },
+  // Price first, for the cheapest tier. Rank keeps a free model from being
+  // chosen when it is far below the band's quality. Provider affinity is
+  // deliberately strong here: switching provider loses the prompt cache, and a
+  // subagent cannot switch at all, so it outranks a small price difference.
+  cost: { value: 0.15, quality: 0.1, price: 0.25, language: 0.02, context: 0.05, recency: 0.03, preference: 0.4 },
+}
+
+/**
+ * Language strengths, as `language -> pattern -> 0..100`, the same shape as the
+ * rank table. Absent data scores neutral, so the language dimension never
+ * distorts a choice on a catalog that has no per-language measurements.
+ */
+export type LanguageFit = Record<string, Record<string, number>>
+
+/** The language a kind implies, then the one a brief reveals. */
+export function languageFor(kind: string | undefined, text: string | undefined, fit?: LanguageFit) {  const byKind: Record<string, string> = { "code-go": "go", "code-rs": "rust", "code-py": "python", "code-ts": "typescript" }
+  const fromKind = kind ? byKind[kind] : undefined
+  if (fromKind && (!fit || fit[fromKind])) return fromKind
+  const brief = text ?? ""
+  const fence = brief.match(/```\s*([a-z0-9+#-]+)/i)?.[1]?.toLowerCase()
+  if (fence && (!fit || fit[fence])) return fence
+  if (/\.go\b|\bgo\.mod\b|\bpackage\s+main\b/i.test(brief)) return "go"
+  if (/\.rs\b|\bcargo\.toml\b/i.test(brief)) return "rust"
+  if (/\.py\b|\bimport\s+\w+\s*$/im.test(brief)) return "python"
+  if (/\.tsx?\b|\btsconfig\.json\b/i.test(brief)) return "typescript"
+  return fromKind
+}
+
+export type Fit = { language?: string | undefined; languages?: LanguageFit | undefined }
+
+/**
+ * The task kind for an agent that was not spawned by `consult`. The name is the
+ * only signal the model hook has: the spawn prompt is not part of the resolve
+ * event. An explicit mapping wins over the name.
+ */
+export function kindForAgent(agent: string, explicit?: Record<string, string>): string | undefined {
+  const chosen = explicit?.[agent]
+  if (chosen) return chosen
+  const name = agent.toLowerCase()
+  if (/(^|[-_])go($|[-_])|golang/.test(name)) return "code-go"
+  if (/code|dev|impl/.test(name)) return "code"
+  if (/review|critic/.test(name)) return "review"
+  if (/writ|doc/.test(name)) return "write"
+  if (/explor|search|lookup|research/.test(name)) return "lookup"
+  return undefined
+}
+
 export type Pick = {
   /** Allowed price as a multiple of the anchor's blended price, `[min, max]`. */
   ratio?: [number, number]
@@ -32,12 +102,25 @@ export type Pick = {
   /** Wildcards over `provider/model` and `model`, applied after `allow`. */
   deny?: string[]
   /**
-   * `quality` sorts by rank then recency then price, `cost` by price then rank,
-   * `value` by rank per dollar, which is what a price-aware choice actually
-   * wants. `value` beats `quality` when two models are close in rank and far
-   * apart in price.
+   * A named weighting preset for the composite score. Every preset still mixes
+   * all of the dimensions; the name only moves the emphasis.
+   *
+   * - `value` (default) leads with quality per dollar, keeps quality as a
+   *   near-equal backstop against a quality cliff, and lets raw price break
+   *   ties. This is the RouteLLM cost-threshold shape, `(1-lambda)Q - lambda C`,
+   *   at roughly an even split, and the same "medium" trade OpenRouter's auto
+   *   router defaults to.
+   * - `quality` leans on measured rank, with value and price as tie-breaks.
+   * - `cost` leans on price, for a tier whose job is to be cheap.
    */
   prefer?: "quality" | "cost" | "value"
+  /**
+   * Per-dimension weights for the composite score, merged over the `prefer`
+   * preset. Add to 1; a dimension left out keeps its preset weight.
+   */
+  weigh?: Partial<Weights>
+  /** Force the language used for the language-fit dimension. */
+  language?: string
   /** Coarse 0-100 scores keyed by wildcard. */
   rank?: Record<string, number>
   /** Provider ids to prefer, in order, when price and rank are otherwise equal. */
@@ -147,6 +230,7 @@ export function effectivePick(pick: Pick, kind: string | undefined): Pick {
     ...pick,
     ...override,
     rank: { ...(pick.rank ?? {}), ...(override.rank ?? {}) },
+    weigh: { ...(pick.weigh ?? {}), ...(override.weigh ?? {}) },
   }
 }
 
@@ -156,6 +240,7 @@ export function pickCandidates(
   anchorKey: string | undefined,
   fallbackRank: Record<string, number> = {},
   kind?: string,
+  fit?: Fit,
 ): Resolved[] {
   const pick = spec.pick ? effectivePick(spec.pick, kind) : undefined
   if (!pick) return []
@@ -172,7 +257,16 @@ export function pickCandidates(
       (pick.minContext === undefined || (model.context ?? Number.POSITIVE_INFINITY) >= pick.minContext),
   )
 
-  const scored = allowed.map((model) => {
+  // A model with no measurement has no quality, and therefore no value: the
+  // price is known but the numerator is not. Scoring it at a neutral 50 would
+  // invent a rank and let a cheap unknown outrank a measured model, so drop the
+  // unranked ones while any measured candidate remains. If the table covers
+  // nothing at all (rankings.json missing, or a catalog of brand-new models),
+  // keep the pool rather than resolve no tier at all.
+  const measured = allowed.filter((model) => (rankFor(table, model) ?? model.derivedRank) !== undefined)
+  const pool2 = measured.length > 0 ? measured : allowed
+
+  const scored = pool2.map((model) => {
     const ratio = anchorPrice > 0 ? model.price / anchorPrice : 0
     return { model, ratio, rank: rankFor(table, model) ?? model.derivedRank }
   })
@@ -194,26 +288,53 @@ export function pickCandidates(
     return index === -1 ? providerOrder.length : index
   }
 
-  const value = (entry: (typeof chosen)[number]) =>
-    (entry.model.bias ?? 1) * (quality(entry) / (1 + entry.model.price))
+  // Every dimension is normalised to [0,1] across the band before it is
+  // weighted, so a weight means what it says. Keeping raw units would let the
+  // largest-numbered dimension swamp the rest: rank is ~50 while quality per
+  // dollar is ~0.1, so a "35% quality" weight would still be 99% of the score.
+  const rawValue = (entry: (typeof chosen)[number]) => quality(entry) / 100 / (1 + entry.ratio)
+  const bestValue = Math.max(...chosen.map(rawValue)) || 1
+  const need = pick.minContext ?? 32_000
+  const rawContext = (entry: (typeof chosen)[number]) => {
+    const size = entry.model.context ?? need
+    return size / (size + need)
+  }
+  const bestContext = Math.max(...chosen.map(rawContext)) || 1
+  const releases = chosen.map((entry) => entry.model.released)
+  const oldest = Math.min(...releases)
+  const recencySpan = Math.max(...releases) - oldest
+  const rawPreference = (entry: (typeof chosen)[number]) => {
+    const ordered = providerOrder.length === 0 ? 0.5 : 1 - providerIndex(entry) / providerOrder.length
+    // A bias below 1 is the hybrid placement preference; it only tilts.
+    return (ordered + 1 / (entry.model.bias ?? 1)) / 2
+  }
+  const bestPreference = Math.max(...chosen.map(rawPreference)) || 1
 
-  const sorted = [...chosen].sort((a, b) => {
-    if (pick.prefer === "value") {
-      return value(b) - value(a) || quality(b) - quality(a) || a.model.price - b.model.price
-    }
-    if (pick.prefer === "cost") {
-      const freeA = a.model.price === 0 ? 0 : 1
-      const freeB = b.model.price === 0 ? 0 : 1
-      return (
-        freeA - freeB ||
-        providerIndex(a) - providerIndex(b) ||
-        (a.model.price * (a.model.bias ?? 1)) - (b.model.price * (b.model.bias ?? 1)) ||
-        quality(b) - quality(a) ||
-        b.model.released - a.model.released
-      )
-    }
-    return quality(b) - quality(a) || b.model.released - a.model.released || a.model.price - b.model.price
-  })
+  const weigh = { ...WEIGHT_PRESETS[pick.prefer ?? "value"], ...(pick.weigh ?? {}) }
+  const language = pick.language ?? fit?.language ?? languageFor(kind, spec.brief, fit?.languages)
+  const languageScore = (entry: (typeof chosen)[number]) => {
+    const table = language ? fit?.languages?.[language] : undefined
+    // No measurement for this language is neutral, not disqualifying.
+    return table ? (rankFor(table, entry.model) ?? 50) / 100 : 0.5
+  }
+
+  const score = (entry: (typeof chosen)[number]) =>
+    weigh.value * (rawValue(entry) / bestValue) +
+    weigh.quality * (quality(entry) / 100) +
+    weigh.price * (1 / (1 + entry.ratio)) +
+    weigh.language * languageScore(entry) +
+    weigh.context * (rawContext(entry) / bestContext) +
+    weigh.recency * (recencySpan > 0 ? (entry.model.released - oldest) / recencySpan : 0.5) +
+    weigh.preference * (rawPreference(entry) / bestPreference)
+
+  const sorted = [...chosen].sort(
+    (a, b) =>
+      score(b) - score(a) ||
+      quality(b) - quality(a) ||
+      rawValue(b) - rawValue(a) ||
+      a.model.price - b.model.price ||
+      modelKey(a.model).localeCompare(modelKey(b.model)),
+  )
 
   // Free tiers get rate limited, so spend a few slots on them, then a cheap paid
   // one, and keep further free models as a last resort. Free slots go round the
@@ -264,7 +385,8 @@ export function pickCandidates(
   return final.slice(0, pick.limit ?? 3).map((entry) => ({
     ref: entry.model.ref,
     note:
-      `${modelKey(entry.model)} ${entry.ratio.toFixed(2)}x rank ${quality(entry)}` +
+      `${modelKey(entry.model)} ${entry.ratio.toFixed(2)}x rank ${quality(entry)} ` +
+      `score ${score(entry).toFixed(3)}` +
       (entry.model.price === 0 ? " free" : ""),
   }))
 }
@@ -275,6 +397,7 @@ export function resolveCandidates(
   anchorKey: string | undefined,
   fallbackRank: Record<string, number> = {},
   kind?: string,
+  fit?: Fit,
 ): Resolved[] {
   if (spec.models && spec.models.length > 0) {
     const resolved: Resolved[] = []
@@ -295,7 +418,7 @@ export function resolveCandidates(
     }
     return resolved
   }
-  return pickCandidates(spec, pool, anchorKey, fallbackRank, kind)
+  return pickCandidates(spec, pool, anchorKey, fallbackRank, kind, fit)
 }
 
 /**

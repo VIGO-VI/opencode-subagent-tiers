@@ -18,10 +18,13 @@ import {
   modelKey,
   parseModel,
   effectivePick,
+  kindForAgent,
+  languageFor,
   resolveCandidates,
   withPaidTail,
   type BudgetSpec,
   type Candidate,
+  type LanguageFit,
   type ModelRef,
   type PricingTable,
   type Resolved,
@@ -118,6 +121,11 @@ type Options = {
   /** Agent id to tier, for agents whose tier cannot be read from a model list. */
   agents?: Record<string, string>
   /**
+   * Agent id to task kind, so a subagent that is not spawned by `consult` still
+   * gets the per-kind ranking and band. Unset infers it from the agent's name.
+   */
+  agentKinds?: Record<string, string>
+  /**
    * What a model actually costs this machine, when that differs from the list
    * price: a subscription, a BYOK key, or a free tier. Wildcards, `"free"` for
    * zero, most specific pattern wins.
@@ -128,6 +136,14 @@ type Options = {
    * local providers, `local` excludes everything else.
    */
   mode?: "hybrid" | "cloud" | "local"
+  /**
+   * When a child's provider has nothing left, move the session's selected model
+   * to the tier's next candidate on another provider and continue, instead of
+   * waking the caller. The resolve hook cannot change provider, but
+   * `session.switchModel` can, so the child keeps its history and the caller
+   * hears nothing. Defaults to on.
+   */
+  crossProvider?: boolean
   /**
    * In hybrid, which side wins a close call. `value` (default) is price per
    * point, `local` and `cloud` bias their side. Ignored in a single-side mode.
@@ -162,7 +178,11 @@ PROBLEM: one sentence naming the defect, then one concrete correction.
 End with a line starting "NEXT: " giving the single next action, so the caller can
 continue from that line alone without re-reading the report.`
 
-type Rankings = { rank: Record<string, number>; byKind: Record<string, Record<string, number>> }
+type Rankings = {
+  rank: Record<string, number>
+  byKind: Record<string, Record<string, number>>
+  languages: LanguageFit
+}
 
 function loadRankings(trace: ReturnType<typeof createTrace>): Rankings {
   for (const relative of ["./rankings.json", "../rankings.json"]) {
@@ -170,16 +190,17 @@ function loadRankings(trace: ReturnType<typeof createTrace>): Rankings {
       const parsed = JSON.parse(readFileSync(new URL(relative, import.meta.url), "utf8")) as {
         rank?: Record<string, number>
         rankByKind?: Record<string, Record<string, number>>
+        languages?: LanguageFit
       }
       if (parsed.rank && typeof parsed.rank === "object") {
-        return { rank: parsed.rank, byKind: parsed.rankByKind ?? {} }
+        return { rank: parsed.rank, byKind: parsed.rankByKind ?? {}, languages: parsed.languages ?? {} }
       }
     } catch {
       continue
     }
   }
   trace.line("tier-router: rankings.json not readable, falling back to price percentiles")
-  return { rank: {}, byKind: {} }
+  return { rank: {}, byKind: {}, languages: {} }
 }
 
 /**
@@ -228,6 +249,7 @@ export default Plugin.define({
       })
     }
     const agentTiers = options.agents ?? {}
+    const agentKinds = options.agentKinds ?? {}
 
     if (order.length === 0) {
       trace.line("tier-router: no tiers configured, tools disabled")
@@ -513,6 +535,9 @@ export default Plugin.define({
       // A kind-specific table wins over the general one, so a model that is
       // strong at code but average overall can still lead a code consult.
       const table = kind && rankings.byKind[kind] ? { ...rankings.rank, ...rankings.byKind[kind] } : rankings.rank
+      // The language dimension only bites when rankings.json has measurements
+      // for it; `languageFor` reads the kind first, then the brief.
+      const fit = { language: languageFor(kind, prompt, rankings.languages), languages: rankings.languages }
       const spec = tiers[tierName] ?? {}
       // A cooling model answers with the same 429 it gave last time, so it goes
       // to the back of the walk. The list is reordered, never shortened: when
@@ -528,7 +553,7 @@ export default Plugin.define({
       // session it serves is still being answered.
       const picked = spec.pick ? effectivePick(spec.pick, kind) : undefined
       const candidates: Resolved[] = withPaidTail(
-        resolveCandidates(spec, pool, anchorKey, table, kind),
+        resolveCandidates(spec, pool, anchorKey, table, kind, fit),
         { ...spec, ...(picked ? { pick: picked } : {}) },
         pool,
         anchorKey?.split("/")[0],
@@ -1106,6 +1131,8 @@ export default Plugin.define({
     }
     /** Per session, the models that have already refused, so none is asked twice. */
     const failed = new Map<string, Set<string>>()
+    /** Per session, the anchor its bands were priced against, for a later switch. */
+    const anchors = new Map<string, string | undefined>()
     /** Sessions with nothing left both untried and warm. */
     const exhausted = new Set<string>()
     /** Sessions told about the current outage, so a walk of three models is one message. */
@@ -1242,6 +1269,12 @@ export default Plugin.define({
         }
         const models = await pool()
         if (models.length === 0) return
+        // A subagent spawned by the task tool carries no explicit kind, so the
+        // per-kind rank table and band were skipped and every child was ranked
+        // on general intelligence. Infer the kind from the agent id instead.
+        const kind = kindForAgent(String(event.agent), agentKinds)
+        const table = kind && rankings.byKind[kind] ? { ...rankings.rank, ...rankings.byKind[kind] } : rankings.rank
+        const fit = { language: languageFor(kind, undefined, rankings.languages), languages: rankings.languages }
         // Two rules decide the order. Free before paid, so a paid model is used
         // only once every free candidate has been tried or is out. Then the
         // provider already in play before the rest, so the prompt cache stays
@@ -1273,6 +1306,10 @@ export default Plugin.define({
           : rootInfo?.model
             ? modelKey(rootInfo.model)
             : undefined
+        // The retry hook, which runs after the walk is spent, needs the same
+        // anchor to price a candidate on another provider.
+        if (anchors.size > 1000) anchors.clear()
+        anchors.set(event.sessionID, anchor)
         const live = await cooldowns()
         const nowMs = Date.now()
         const priceOf = new Map(models.map((model) => [modelKey(model), model.price]))
@@ -1294,7 +1331,7 @@ export default Plugin.define({
         const usableTail = (model: Candidate) =>
           !done.has(modelKey(model.ref)) && !isCooling(live, model.ref, model.price, nowMs)
         const ordered = withPaidTail(
-          resolveCandidates(spec, models, anchor, rankings.rank),
+          resolveCandidates(spec, models, anchor, table, kind, fit),
           spec,
           models,
           from,
@@ -1306,7 +1343,9 @@ export default Plugin.define({
                 { ...spec, pick: { ...spec.pick, ratio: [0, PAID_TAIL_RATIO] } },
                 models,
                 anchor,
-                rankings.rank,
+                table,
+                kind,
+                fit,
               ),
               spec,
               models,
@@ -1343,7 +1382,7 @@ export default Plugin.define({
           // attempt would repeat a refusal the caller has already paid for.
           // Name what the provider boundary put out of reach: the tier may still
           // have candidates, but the hook cannot cross to them.
-          const elsewhere = resolveCandidates(tier, models, anchor, rankings.rank)
+          const elsewhere = resolveCandidates(tier, models, anchor, table, kind, fit)
             .filter((candidate) => candidate.ref.providerID !== from)
             .filter((candidate) => !done.has(modelKey(candidate.ref)))
             .filter((candidate) => !isCooling(live, candidate.ref, priceOf.get(modelKey(candidate.ref)) ?? 1, nowMs))
@@ -1415,7 +1454,7 @@ export default Plugin.define({
         const tierName = agentTiers[agent]
         // The price decides whether a provider-wide strike covers the free or
         // the paid half, so the catalog is loaded before the plan is made.
-        await pool()
+        const models = await pool()
         const model = { providerID: event.model.providerID, id: event.model.id }
         const plan = retryPlan({
           refusal,
@@ -1442,6 +1481,55 @@ export default Plugin.define({
         const done = failed.get(sessionID) ?? new Set<string>()
         failed.set(sessionID, done)
         done.add(key)
+        // The resolve hook cannot change provider, but the session API can, and
+        // it is the same call as `/model`: the session keeps its history and the
+        // next request is built against the new selection. So when the walk on
+        // this provider is spent and the tier still has a measured candidate
+        // elsewhere, move the session there and retry in place. The caller hears
+        // nothing, because the child continues rather than dying and being
+        // recalled. Only a tier with nowhere left to go reaches `inform`.
+        if (!plan.retry && options.crossProvider !== false) {
+          const elsewhere = tierName ? tiers[tierName] : undefined
+          if (elsewhere) {
+            // Read the cooldowns after the strike, so a provider-wide refusal
+            // just written is visible to this choice.
+            const live = await cooldowns()
+            const priceOf = new Map(models.map((candidate) => [modelKey(candidate), candidate.price]))
+            const kind = kindForAgent(agent, agentKinds)
+            const table =
+              kind && rankings.byKind[kind] ? { ...rankings.rank, ...rankings.byKind[kind] } : rankings.rank
+            const fit = {
+              language: languageFor(kind, undefined, rankings.languages),
+              languages: rankings.languages,
+            }
+            const now = Date.now()
+            const next = resolveCandidates(elsewhere, models, anchors.get(sessionID), table, kind, fit).find(
+              (candidate) =>
+                candidate.ref.providerID !== model.providerID &&
+                !done.has(modelKey(candidate.ref)) &&
+                !isCooling(live, candidate.ref, priceOf.get(modelKey(candidate.ref)) ?? 1, now),
+            )
+            if (next) {
+              try {
+                await ctx.session.switchModel({ sessionID, model: next.ref })
+                remember(sessionID, next.ref)
+                exhausted.delete(sessionID)
+                pinned.delete(sessionID)
+                trace.line(
+                  `tier-router: ${agent} has nothing left on ${model.providerID}; ` +
+                    `switching this session to ${modelKey(next.ref)} and continuing`,
+                )
+                event.decision = { retry: true, delay: Math.min(plan.delay ?? 0, 2_000) }
+                return
+              } catch (error) {
+                trace.line(
+                  `tier-router: could not switch ${agent} off ${model.providerID}: ` +
+                    `${(error as Error)?.message ?? error}`,
+                )
+              }
+            }
+          }
+        }
         // Another attempt is worth it only while the session has an untried
         // model that is reachable now, which is what the last resolve recorded.
         // Only an empty tier stops the walk. A cap on attempts used to be here, and

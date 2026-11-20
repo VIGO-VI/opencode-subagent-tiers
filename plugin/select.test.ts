@@ -9,6 +9,8 @@ import {
   budgetFor,
   confidence,
   blendedPrice,
+  kindForAgent,
+  languageFor,
   matches,
   modelKey,
   newestOfFamily,
@@ -17,6 +19,7 @@ import {
   rankFor,
   resolveCandidates,
   withPaidTail,
+  WEIGHT_PRESETS,
   type Candidate,
   type TierSpec,
 } from "./select.ts"
@@ -156,7 +159,6 @@ test("free tiers come first, opencode before the router, then a cheap paid model
     picked.map((entry) => `${entry.ref.providerID}:${entry.ref.id}`),
     [
       "opencode-go:hy4-flash-free",
-      "console-openrouter:particle-1:free",
       "opencode-go:deepseek-v4.1-flash",
       "console-openrouter:tencent/hy4-flash",
     ],
@@ -211,7 +213,7 @@ test("free slots cap how many free candidates are tried before paid ones", () =>
     candidate("deepseek-v4.1-flash", 0.75, 385),
   ]
   const spec: TierSpec = { pick: { ratio: [0, 0.6], prefer: "cost", limit: 3, freeSlots: 1 } }
-  const picked = pickCandidates(spec, frees, base, rank)
+  const picked = pickCandidates(spec, frees, base, { ...rank, "*free*": 50, tencent: 50 })
   assert.deepEqual(
     picked.map((entry) => entry.ref.id),
     ["a-free", "tencent", "b-free"],
@@ -237,7 +239,7 @@ test("free slots go round the providers before one crowds the others out", () =>
       providerOrder: ["opencode-go", "console-openrouter"],
     },
   }
-  const picked = pickCandidates(spec, mixed, "opencode-go/deepseek-v4.1-flash", rank)
+  const picked = pickCandidates(spec, mixed, "opencode-go/deepseek-v4.1-flash", { ...rank, "*free*": 50, paid: 50 })
   assert.deepEqual(
     picked.map((entry) => entry.ref.id),
     ["a-free", "d-free", "b-free"],
@@ -265,7 +267,7 @@ test("a provider-confined walk spends its slots inside that provider", () => {
       providers: ["opencode"],
     },
   }
-  const picked = pickCandidates(spec, mixed, "opencode/main-paid", rank)
+  const picked = pickCandidates(spec, mixed, "opencode/main-paid", { ...rank, "*free*": 50, "main-paid": 50 })
   assert.deepEqual(
     picked.map((entry) => entry.ref.id),
     ["main-free", "main-paid"],
@@ -358,7 +360,7 @@ test("the cheapest cloud copy of a model wins, and the local copy is kept", () =
     candidate("same-model", 0.5, 380, "ollama", { tools: true, context: 128000, derivedRank: 60 }),
   ]
   const spec: TierSpec = { pick: { ratio: [0, 10], prefer: "cost", limit: 3, requireTools: true } }
-  const picked = pickCandidates(spec, mixed, "cloud-b/same-model", {})
+  const picked = pickCandidates(spec, mixed, "cloud-b/same-model", { "*same-model*": 50 })
   const providers = picked.map((entry) => entry.ref.providerID)
   assert.deepEqual(providers.sort(), ["cloud-b", "ollama"])
 })
@@ -512,4 +514,75 @@ test("the paid tail respects a tier's allow list", () => {
     withPaidTail([], rootOnly, tailPool, "root").map((entry) => entry.ref.id),
     ["paid-small"],
   )
+})
+
+test("the default weighting buys a little rank for a lot of price", () => {
+  const models: Candidate[] = [candidate("base", 1, 400), candidate("strong", 8, 400), candidate("cheap", 1.1, 400)]
+  const table = { "*base*": 70, "*strong*": 90, "*cheap*": 80 }
+  const spec: TierSpec = { pick: { ratio: [0, 20], limit: 1 } }
+  const picked = pickCandidates(spec, models, "test/base", table)
+  assert.equal(picked[0]!.ref.id, "cheap")
+})
+
+test("a quality weight override restores rank order", () => {
+  const models: Candidate[] = [candidate("base", 1, 400), candidate("strong", 8, 400), candidate("cheap", 1.1, 400)]
+  const table = { "*base*": 70, "*strong*": 90, "*cheap*": 80 }
+  const spec: TierSpec = {
+    pick: {
+      ratio: [0, 20],
+      limit: 1,
+      weigh: { value: 0, quality: 1, price: 0, language: 0, context: 0, recency: 0, preference: 0 },
+    },
+  }
+  assert.equal(pickCandidates(spec, models, "test/base", table)[0]!.ref.id, "strong")
+})
+
+test("language fit lifts a model that is measured for that language", () => {
+  const models: Candidate[] = [candidate("alpha", 1, 400), candidate("zeta", 1, 400)]
+  const table = { "*alpha*": 70, "*zeta*": 70 }
+  const spec: TierSpec = { pick: { ratio: [0, 20], limit: 1 } }
+  // Equal on everything else, so the alphabetical tie-break decides.
+  assert.equal(pickCandidates(spec, models, "test/alpha", table)[0]!.ref.id, "alpha")
+  const fit = { language: "go", languages: { go: { "*zeta*": 90, "*alpha*": 20 } } }
+  assert.equal(pickCandidates(spec, models, "test/alpha", table, "code-go", fit)[0]!.ref.id, "zeta")
+})
+
+test("an unranked model is dropped while a measured one remains", () => {
+  const models: Candidate[] = [candidate("measured", 1, 400), candidate("mystery", 0, 400)]
+  const spec: TierSpec = { pick: { ratio: [0, 20], prefer: "cost", limit: 5 } }
+  assert.deepEqual(
+    pickCandidates(spec, models, "test/measured", { "*measured*": 70 }).map((entry) => entry.ref.id),
+    ["measured"],
+  )
+  // Nothing measured at all (rankings unavailable): the pool survives.
+  assert.deepEqual(
+    pickCandidates(spec, [candidate("mystery", 0, 400)], "test/mystery", {}).map((entry) => entry.ref.id),
+    ["mystery"],
+  )
+})
+
+test("every weighting preset is a full, normalised mix", () => {
+  for (const [name, weights] of Object.entries(WEIGHT_PRESETS)) {
+    const total = Object.values(weights).reduce((sum, weight) => sum + weight, 0)
+    assert.ok(Math.abs(total - 1) < 1e-9, `${name} sums to ${total}`)
+    for (const [dimension, weight] of Object.entries(weights)) {
+      assert.ok(weight > 0, `${name}.${dimension} must be non-zero: every dimension is combined`)
+    }
+  }
+})
+
+test("an agent's kind is inferred from its name", () => {
+  assert.equal(kindForAgent("swarm-worker-code"), "code")
+  assert.equal(kindForAgent("swarm-worker-code-go"), "code-go")
+  assert.equal(kindForAgent("explore"), "lookup")
+  assert.equal(kindForAgent("advisor"), undefined)
+  assert.equal(kindForAgent("swarm-lead"), undefined)
+  assert.equal(kindForAgent("anything", { anything: "review" }), "review")
+})
+
+test("the task language comes from the kind first, then the brief", () => {
+  assert.equal(languageFor("code-go", undefined), "go")
+  assert.equal(languageFor("code", "```go\nfunc main() {}\n```"), "go")
+  assert.equal(languageFor("code", "a .rs file with Cargo.toml"), "rust")
+  assert.equal(languageFor("code", "no code here"), undefined)
 })
