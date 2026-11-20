@@ -152,6 +152,39 @@ test("a fresh install copies every agent and writes a wired config", () => {
   }
 })
 
+/** Rewrite the fixture's nudge setting, so the printed reminder can be checked. */
+function setNudge(fixture, value) {
+  const path = join(fixture.repo, "tiers.json")
+  const tiers = JSON.parse(readFileSync(path, "utf8"))
+  tiers.nudge = value
+  writeFileSync(path, `${JSON.stringify(tiers, null, 2)}\n`)
+}
+
+test("a nudge of zero turns the reminder off rather than becoming five", () => {
+  const fixture = setup()
+  try {
+    setNudge(fixture, 0)
+    const result = install(fixture)
+    assert.equal(result.status, 0, result.stderr)
+    assert.match(result.stdout, /delegation reminder: off/)
+    assert.doesNotMatch(result.stdout, /after 5 requests/)
+  } finally {
+    cleanup(fixture)
+  }
+})
+
+test("a nudge of three is taken literally", () => {
+  const fixture = setup()
+  try {
+    setNudge(fixture, 3)
+    const result = install(fixture)
+    assert.equal(result.status, 0, result.stderr)
+    assert.match(result.stdout, /delegation reminder: on, after 3 requests/)
+  } finally {
+    cleanup(fixture)
+  }
+})
+
 test("a second install is idempotent", () => {
   const fixture = setup()
   try {
