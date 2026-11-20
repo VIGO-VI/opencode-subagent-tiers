@@ -22,6 +22,7 @@ import {
   withPaidTail,
   type BudgetSpec,
   type Candidate,
+  type ModelRef,
   type PricingTable,
   type Resolved,
   type TierSpec,
@@ -1084,6 +1085,18 @@ export default Plugin.define({
     // agent the user chose for the session keeps the model they chose, which is
     // why this only serves sessions that have a parent.
     const pinned = new Map<string, string>()
+    /**
+     * The model each session last resolved for a request. A session record does
+     * not carry it, so both the peer band and the tierless fall-through would be
+     * inert without this: each one asks what the session that called is running
+     * on. Recording happens for the root too, before the child check, because the
+     * root is the spawner every first-level child falls through to.
+     */
+    const resolved = new Map<string, ModelRef>()
+    function remember(sessionID: string, model: { providerID: string; id: string }) {
+      if (resolved.size > 1000) resolved.clear()
+      resolved.set(sessionID, { providerID: model.providerID, id: model.id })
+    }
     /** Per session, the models that have already refused, so none is asked twice. */
     const failed = new Map<string, Set<string>>()
     /** Sessions with nothing left both untried and warm. */
@@ -1182,6 +1195,7 @@ export default Plugin.define({
     try {
       await ctx.session.hook("experimental.model.resolve", async (event) => {
         if (event.kind !== "primary") return
+        remember(event.sessionID, event.model)
         if (!(await isChild(event.sessionID))) return
         const tierName = agentTiers[String(event.agent)]
         if (!tierName || !tiers[tierName]) {
@@ -1199,7 +1213,7 @@ export default Plugin.define({
           const spawner = info?.parentID
             ? await ctx.session.get({ sessionID: info.parentID }).catch(() => undefined)
             : undefined
-          const want = spawner?.model
+          const want = (info?.parentID ? resolved.get(info.parentID) : undefined) ?? spawner?.model
           if (want) {
             const kept = modelKey(event.model)
             if (modelKey(want) !== kept) {
@@ -1209,6 +1223,7 @@ export default Plugin.define({
                   id: want.id as typeof event.model.id,
                 }
                 trace.line(`tier-router: ${event.agent} has no tier; using the spawner's ${modelKey(want)}`)
+                remember(event.sessionID, want)
               } else {
                 trace.line(
                   `tier-router: ${event.agent} has no tier; spawner ${modelKey(want)} is on another provider, keeping ${kept}`,
@@ -1242,7 +1257,15 @@ export default Plugin.define({
         // which left the paid tail reaching only the cheapest paid models.
         const rootID = await rootSession(event.sessionID)
         const rootInfo = await ctx.session.get({ sessionID: rootID }).catch(() => undefined)
-        const anchor = rootInfo?.model ? modelKey(rootInfo.model) : undefined
+        // The session record does not carry the model, so prefer what the root
+        // actually resolved for its own requests. Without it the band has no
+        // anchor and a "priced against the caller" tier is priced against nothing.
+        const rememberedRoot = resolved.get(rootID)
+        const anchor = rememberedRoot
+          ? modelKey(rememberedRoot)
+          : rootInfo?.model
+            ? modelKey(rootInfo.model)
+            : undefined
         const live = await cooldowns()
         const nowMs = Date.now()
         const priceOf = new Map(models.map((model) => [modelKey(model), model.price]))
@@ -1359,6 +1382,7 @@ export default Plugin.define({
             id: pick.ref.id as typeof event.model.id,
           }
           trace.line(`tier-router: ${event.agent} served by ${key} for ${tierName}`)
+          remember(event.sessionID, pick.ref)
         }
       })
     } catch (error) {
